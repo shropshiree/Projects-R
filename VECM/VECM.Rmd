@@ -1,0 +1,189 @@
+---
+title: "Model VECM"
+author: "Wiktoria Szczypka"
+date: "20 stycznia 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+###Wstęp
+
+Celem tego projektu jest zbudowanie modelu VECM dla indeksów giełdowych z poszczególnych krajów:
+
+* Polska - WIG,
+
+* Wielka Brytania - FTSE,
+
+* Stany Zjednoczone - SPX,
+
+* Chiny - SHC,
+
+* Singapur - STI.
+
+Za pomocą tego modelu możliwe będzie zbadanie impulsów między giełdami.
+
+Zaczynam od wczytania danych - są to indeksy zamknięcia wraz z datami dla powyższych krajów. 
+
+```{r}
+setwd("C:/Users/Wiktoria/Documents/IiE/Rok 4/AW/Projekt 2")
+
+
+shc <- read.csv("shc_d.csv")[,c(1,5)]
+spx <- read.csv("spx_d.csv")[,c(1,5)]
+sti <- read.csv("sti_d.csv")[,c(1,5)]
+wig <- read.csv("wig_d.csv")[,c(1,5)]
+ftse <- read.csv("ftse.csv")[,c(1,5)]
+```
+
+Za pomocą funkcji 'full_join' łącze dane w zbiór. Moje dane różnią się - dla niektórych dat obserwacje nie pokrywają się. Funkcja ta stworzy zbiór z wartościami brakującymi (NA), gdy zmienna dla danej daty nie ma takiej obserwacji.
+
+```{r}
+library(dplyr)
+
+dane <- full_join(shc,spx, by="Data")
+dane <- full_join(dane,sti, by="Data")
+dane <- full_join(dane,ftse, by="Data")
+dane <- full_join(dane,wig, by="Data")
+colnames(dane) <- c("Data", "shc", "spx", "sti","ftse", "wig")
+
+
+dane <- dane[order(dane$Data),]
+```
+
+W celu uzupełnienia wartości NA w zbiorze danych używam interpolacji liniowej. Umożliwia to funkcja 'na.approx'. 
+
+```{r}
+library(zoo)
+dane[,2:6] <- lapply(dane[,-1], na.approx)
+```
+
+Następnie obliczam logarytmy cen dla zmiennych. Wprowadzam jednak modyfikacje - z powodów różnic w strefach czasowych 'przesuwam' zmienne SHC i STI o 1 dzień do przodu, aby lepiej obrazowały one rzeczywistość - w tych krajach przesunięcie czasowe jest o 7 godzin naprzód względem Polski.
+
+```{r}
+#logarytm ceny, dla chin i singapuru przesuwam o jedna obserwacje
+log_ceny <- data.frame(SHC=double(), SPX=double(), STI=double(),FTSE=double(), WIG=double())
+for(i in 1:2584) {
+  log_ceny[i,1] <- log(dane[i+1,2])
+  log_ceny[i,2] <- log(dane[i,3])
+  log_ceny[i,3] <- log(dane[i+1,4])
+  log_ceny[i,4] <- log(dane[i,5])
+  log_ceny[i,5] <- log(dane[i,6])
+}
+```
+
+###Model VECM
+
+Model VECM to odpowiednik modelu VAR w warunkach kointegracji szeregów czasowych. Skointegrowanie szeregów czasowych oznacza istnienie wspólnej długookresowej ścieżki równowagi dla tych szeregów. W praktyce kointegracja występuje, gdy szeregi czasowe nie są stacjonarne (najczęściej są zintegrowane w stopniu pierwszym) oraz istnieje ich stacjonarna kombinacja liniowa. W badaniach zjawiska kointegracji stosuje się najczęściej test śladu lub test maksymalnej wartości własnej.
+
+Pożądana jest stacjonarność pierwszego rzędu. Poniżej przeprowadzono test ADF dla logarytmów cen.
+
+```{r}
+library(tseries)
+lapply(log_ceny, adf.test)
+```
+
+Odrzucono hipotezę zerową (szereg nie jest stacjonarny) na poziomie istotności 5% dla zmiennej SPX oraz FTSE. Pozostałe szeregi są niestacjonarne.
+
+Ze względu na to, że pożądana jest przez nas stacjonarność pierwszego rzędu wykonuje ponownie test ADF dla pierwszych różnic. 
+
+```{r}
+log_ceny_roz <- data.frame(SHC=double(), SPX=double(), STI=double(),FTSE=double(), WIG=double())
+for(i in 1:2583) {
+  log_ceny_roz[i,1] <- log_ceny[i+1,1] - log_ceny[i, 1]
+  log_ceny_roz[i,2] <- log_ceny[i+1,2] - log_ceny[i, 2]
+  log_ceny_roz[i,3] <- log_ceny[i+1,3] - log_ceny[i, 3]
+  log_ceny_roz[i,4] <- log_ceny[i+1,4] - log_ceny[i, 4]
+  log_ceny_roz[i,5] <- log_ceny[i+1,5] - log_ceny[i, 5]
+}
+
+lapply(log_ceny_roz, adf.test)
+
+```
+
+Tym razem dla wszystkich zmiennych odrzucono hipotezę zerową - oznacza to, że szeregi czasowe są stacjonarne. Zatem spełnione jest założenie, że zmienne są I(0) lub I(1).
+
+Następnie należy wykonać testy Johansena badające liczbę relacji kointegrujących. Wykonany został poniżej zarówno test śladu jak i maksymalnej wartości własnej. Parametrem testu jest opóźnienie, jest ono o 1 mniejsze niż to co uzyskano za pomocą funkcji `VARselect`. 
+
+```{r}
+library(vars)
+VARselect(log_ceny)
+```
+
+Otrzymano wyniki 3 i 2, więc jako opóźnienie w teście Johansena przyjęto 2.
+
+```{r}
+jottest <- ca.jo(log_ceny, type = "trace",K=2, ecdet="none", spec="longrun")
+summary(jottest)
+jotest<-ca.jo(log_ceny,type="eigen",K = 2,ecdet = "none",spec = "longrun")
+summary(jotest)
+```
+
+Oba testy wskazały na to, że liczba relacji kointegrujących to 1.
+
+Poniżej stworzono model VECM dla opóźnienia 2 i liczby relacji 1.
+
+```{r}
+library(tsDyn)
+model_VECM<-VECM(log_ceny, lag = 2, r=1, estim = "ML")
+summary(model_VECM)
+```
+
+Wykonay zostanie teraz wielowymiarowy test badający czy występuje autokorelacja. Hipoteza zerowa: brak autokorelacji. Do testu zostanie użyty model VAR stworzony dla reszt z modelu VAR dla logarytmów cen.
+
+Jako opóźnienie w pierwszym modelu VAR przyjęto 3.
+
+```{r}
+modelVAR3 <- VAR(log_ceny, p=3)
+
+reszty3 <- data.frame(SHC = modelVAR3$varresult$SHC$residuals,
+                      SPX = modelVAR3$varresult$SPX$residuals,
+                      STI = modelVAR3$varresult$STI$residuals,
+                      FTSE = modelVAR3$varresult$FTSE$residuals,
+                      WIG = modelVAR3$varresult$WIG$residuals
+                      
+)
+```
+
+Następnie stoworzono model VAR dla reszt z opóźnieniem 1.
+
+```{r}
+VARselect(reszty3)
+modelVAR3_reszty <- VAR(reszty3, p=1)
+```
+
+Poniżej wykonano wielowymiarowy test za pomocą funkcji `serial.test`.
+```{r}
+serial.test(modelVAR3_reszty, type = "BG")
+```
+
+Jak widać wartość p jest duża, co oznacza brak powodów do odrzucenia hipotezy zerowej - brak autokorelacji.
+
+Kolejnym krokiem jest zbadanie impulsów - czyli jak impuls na jednej giełdzie wpłynie na drugą. Kolejność zmiennych w modelu ma znaczenie - można interpretować wyniki tylko 'wprzód'. Giełda polska została umieszczona na samym końcu, aby zbadać jak impulsy pozostałych giełd na nią wpływają.
+
+```{r}
+plot(irf(model_VECM, impulse = "SHC"))
+```
+
+Impuls na giełdzie chińskiej najmniej wpływa na giełde w Singapurze. Najbardziej gwałtowny wpływ można zauważyć na giełdę londyńską. Na giełdzie polskiej wpływ ten bardzo długo się utrzymuje.
+
+```{r}
+plot(irf(model_VECM, impulse = "SPX"))
+```
+
+Impulsu na giełdnie amerykańskiej nie interpretujemy dla giełdy poprzedniej - SHC. Największy wpływ można zauważyć na giełdzie polskiej.
+
+```{r}
+plot(irf(model_VECM, impulse = "STI"))
+```
+
+Impuls na giełdzie singapurskiej ma bardzo duży wpływ na giełdę londyńską i polską zarówno krótko jak i długoterminowo.
+
+```{r}
+plot(irf(model_VECM, impulse = "FTSE")) 
+```
+
+Impuls na giełdzie londyńskiej nie ma dużego wpływu na giełdę polską.
+

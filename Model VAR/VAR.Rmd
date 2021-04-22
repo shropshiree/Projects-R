@@ -1,0 +1,183 @@
+---
+title: "Model VAR"
+author: "Wiktoria Szczypka"
+date: "23 grudnia 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+###Wstêp
+
+Celem tego projektu jest stworzenie modelu VAR dla indeksów gie³dowych z poszczególnych krajów:
+
+* Polska - WIG,
+
+* Wielka Brytania - FTSE,
+
+* Stany Zjednoczone - SPX,
+
+* Chiny - SHC,
+
+* Singapur - STI.
+
+Za pomoc¹ tego modelu bêdzie mo¿liwe zbadanie przyczynowoœci w sensie Grangera, co pozwoli odpowiedzieæ na pytanie czy gie³dy wzajemnie na siebie wp³ywaj¹. 
+
+Zaczynam od wczytania danych - s¹ to indeksy zamkniêcia wraz z datami dla powy¿szych krajów. 
+
+```{r}
+setwd("C:/Users/Wiktoria/Documents/IiE/Rok 4/AW/Projekt 2")
+
+
+shc <- read.csv("shc_d.csv")[,c(1,5)]
+spx <- read.csv("spx_d.csv")[,c(1,5)]
+sti <- read.csv("sti_d.csv")[,c(1,5)]
+wig <- read.csv("wig_d.csv")[,c(1,5)]
+ftse <- read.csv("ftse.csv")[,c(1,5)]
+```
+
+Za pomoc¹ funkcji 'full_join' ³¹cze dane w zbiór. Moje dane ró¿ni¹ siê - dla niektórych dat obserwacje nie pokrywaj¹ siê. Funkcja ta stworzy zbiór z wartoœciami brakuj¹cymi (NA), gdy zmienna dla danej daty nie ma takiej obserwacji.
+
+```{r}
+library(dplyr)
+
+dane <- full_join(shc,spx, by="Data")
+dane <- full_join(dane,sti, by="Data")
+dane <- full_join(dane,wig, by="Data")
+dane <- full_join(dane,ftse, by="Data")
+colnames(dane) <- c("Data", "shc", "spx", "sti", "wig","ftse")
+
+dane <- dane[order(dane$Data),]
+```
+
+W celu uzupe³nienia wartoœci NA w zbiorze danych u¿ywam interpolacji liniowej. Umo¿liwia to funkcja 'na.approx'. 
+
+```{r}
+library(zoo)
+dane[,2:6] <- lapply(dane[,-1], na.approx)
+```
+
+Nastêpnie obliczam stopy zwrotu dla zmiennych. Wprowadzam jednak modyfikacje - z powodów ró¿nic w strefach czasowych 'przesuwam' zmienne SHC i STI o 1 dzieñ do przodu, aby lepiej obrazowa³y one rzeczywistoœæ - w tych krajach przesuniêcie czasowe jest o 7 godzin naprzód wzglêdem Polski.
+
+```{r}
+#stopa zwrotu, dla Chin i Singapuru przesuwam o jedna obserwacje
+stopy <- data.frame(SHC=double(), SPX=double(), STI=double(), WIG=double(),FTSE=double())
+for(i in 1:2583) {
+  stopy[i,1] <- log(dane[i+2,2]/dane[i+1,2])
+  stopy[i,2] <- log(dane[i+1,3]/dane[i,3])
+  stopy[i,3] <- log(dane[i+2,4]/dane[i+1,4])
+  stopy[i,4] <- log(dane[i+1,5]/dane[i,5])
+  stopy[i,5] <- log(dane[i+1,6]/dane[i,6])
+}
+```
+
+
+###Model VAR
+
+Model VAR to model wektorowo-autoregresyjny. W modelu tym nie istnieje podzia³ na zmienne endogeniczne i egzogeniczne. Ka¿da zmienna tworzy osobne równanie modelu - jest tyle równañ ile zmiennych u¿ytych w badaniu. Zmiennymi objaœniaj¹cymi s¹ opóŸnienia wszystkich zmiennych objaœnianych, a wiêc tak naprawdê jest to model prosty. Do oszacowania jego parametrów mo¿na zastosowaæ klasyczn¹ metodê najmniejszych kwadratów.
+
+W celu poprawnego zbudowania modelu zmienne powinny byæ stacjonarne. Badam to za pomoc¹ testu ADF. 
+
+$H_0:$ Proces jest zintegrowany stopnia pierwszego
+
+$H_1$: Proces jest stacjonarny
+
+```{r}
+library(tseries)
+lapply(stopy, adf.test)
+```
+
+Dla wszystkich zmiennych p-value jest niewielkie. Oznacza to ¿e na poziomie istotnoœci 5% mo¿na odrzuciæ hipotezê zerow¹ - wszystkie procesy s¹ stacjonarne.
+
+Jak wspomnia³am w modelu VAR wystêpuj¹ opóŸnienia wszystkich zmiennych, ich wybór jest istotn¹ kwesti¹. Istniej¹ kryteria, które wskazuj¹ najlepszy rz¹d opóŸnieñ. U¿ywam do tego funkcji 'VARselect', która przedstawi wyniki 4 kryteriów.
+
+```{r}
+library(vars)
+VARselect(stopy)
+```
+
+Dwa kryteria wskaza³y, ¿e najlepiej wybraæ opóŸnienie 1, a pozosta³e 2. W zwi¹zku z tym tworzê najpierw model z opóŸnieniem równym 1.
+
+```{r}
+modelVAR1 <- VAR(stopy, p=1)
+```
+
+W celu poprawnego korzystania z modelu nale¿y sprawdziæ czy nie wystêpuje autokorelacja sk³adnika losowego oraz czy ma on rozk³ad normalny.
+
+Do zbadania autokorelacji u¿yjê testu Ljung-Boxa.
+
+$H_0:$ brak autokorelacji sk³adnika losowego
+
+$H_1:$ autokorelacja wystêpuje
+
+```{r}
+reszty1 <- data.frame(SHC = modelVAR1$varresult$SHC$residuals,
+                      SPX = modelVAR1$varresult$SPX$residuals,
+                      STI = modelVAR1$varresult$STI$residuals,
+                      WIG = modelVAR1$varresult$WIG$residuals,
+                      FTSE = modelVAR1$varresult$FTSE$residuals
+                      
+)
+
+lapply(reszty1,LB <- function(x) {
+  Box.test(x,lag=1,type="Ljung-Box")
+})
+```
+
+Na poziomie istotnoœci 5% nie ma powodu, by odrzuciæ hipotezê zerow¹ - autokorelacja rzêdu 1 nie jest istotna. 
+
+Nastêpnie w celu zbadania normalnoœci u¿ywam testu Jarque-Bera.
+
+$H_0:$ sk³adnik losowy ma rozk³ad normalny
+
+$H_1:$ sk³adnik losowy nie ma rozk³adu normalnego
+
+```{r}
+lapply(reszty1, jarque.bera.test)
+```
+
+Jak widaæ wartoœci p-value s¹ niewielkie co sugeruje, by odrzuciæ hipotezê zerow¹. Jednak ze wzglêdu na du¿¹ próbê nie nale¿y siê tym przejmowaæ - mo¿na za³o¿yæ, ¿e rozk³ad jest asymptotycznie normalny. Estymatory MNK maj¹ po¿¹dane w³asnoœci.
+
+###Wnioski - przyczynowoœæ
+
+W poprzedniej czêœci projektu stworzono model oraz zbadano czy jest on poprawny. Teraz mo¿na zbadaæ przyczynowoœæ w sensie Grangera. Oznacza to, ¿e X powoduje Y wtedy i tylko wtedy, gdy w³¹czenie do modelu przewiduj¹cego zmienn¹ objaœnian¹ Y wartoœci zmiennej objaœnianej X zwiêksza trafnoœæ predykcji.
+
+Najpierw zbadam przyczynowoœæ jednej gie³dy na cztery pozosta³e. U¿ywam do tego funkcji 'causality'.
+
+$H_0:$ stopy zwrotu danej gie³dy nie jest przyczyn¹ (w sensie Grangera) pozosta³ych.
+
+```{r}
+causality(modelVAR1, cause="SHC")$Granger
+causality(modelVAR1, cause="SPX")$Granger
+causality(modelVAR1, cause="STI")$Granger
+causality(modelVAR1, cause="WIG")$Granger
+causality(modelVAR1, cause="FTSE")$Granger
+```
+
+Jak widaæ to co dzieje siê na gie³dzie w Chinach, Singapurze oraz Stanach Zjednoczonych jest przyczyn¹ zachowania innych gie³d. Jednak w przypadku Polski i Wielkiej Brytanii nie mo¿na tego stwierdziæ. 
+
+Zbadam teraz czy polska gie³da wp³ywa w jakiœ sposób na któr¹kolwiek z gie³d - bêdê badaæ przyczynowoœæ Grangera pojedynczo, a nie jak wy¿ej dla wszystkich gie³d ³¹cznie.
+
+```{r}
+grangertest(stopy$SHC~stopy$WIG, order=1)
+grangertest(stopy$SPX~stopy$WIG, order=1)
+grangertest(stopy$STI~stopy$WIG, order=1)
+grangertest(stopy$FTSE~stopy$WIG, order=1)
+```
+
+Jak widaæ ¿adnego wp³ywu nie mo¿na uznaæ za istotnego. Oznacza to, ¿e zachowanie na polskiej gie³dzie nie jest przyczyn¹ zachowania na gie³dzie w ¿adnym z pozosta³ych krajów.
+
+Zbadam teraz dok³adnie, które z krajów maj¹ wp³yw na polsk¹ gie³dê.
+
+```{r}
+grangertest(stopy$WIG~stopy$SHC, order=1)
+grangertest(stopy$WIG~stopy$SPX, order=1)
+grangertest(stopy$WIG~stopy$STI, order=1)
+grangertest(stopy$WIG~stopy$FTSE, order=1)
+```
+
+Mo¿na zauwa¿yæ, ¿e ka¿dy z badanych krajów ma wp³yw na Polskê.
+
+

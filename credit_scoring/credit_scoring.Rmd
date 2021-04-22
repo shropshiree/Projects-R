@@ -1,0 +1,916 @@
+---
+title: "Credit scoring"
+author: "Wiktoria Szczypka"
+date: "30 maja 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+#wczytanie bibliotek
+library(ggplot2)
+library(gridExtra)
+library(mice)
+library(dplyr)
+library(caret)
+library(pROC)
+library(gbm)
+library(class)
+library(fastDummies)
+library(naivebayes)
+library(e1071)
+library(randomForest)
+library(mlr)
+library(MASS)
+
+#wczytanie danych
+data <- read.csv("C:/Users/Wiktoria/Documents/IiE/Rok 3/Semestr 6/ilosciowe aspekty/credit_scoring/kredyt_indie.csv", sep=";")
+```
+
+
+##Wstêp
+
+Celem tego projektu bêdzie wykonanie kilku modeli, które pozwol¹ prognozowaæ indywidualne ryzyko kredytowe, tj. czy udzieliæ komuœ kredyt mieszkaniowy czy nie. Po wykonaniu modeli postaram wybraæ siê ten, który bêdzie najbardziej wiarygodny i z najwiêksz¹ skutecznoœci¹ pozwoli oceniaæ na podstawie zmiennych objaœniaj¹cych czy mo¿na danej osobie udzieliæ kredytu. Dane na podstawie, których wykonam modele to historyczne informacje o danej osobie oraz to czy udzielono jej kredytu mieszkaniowego. Podzielê te dane na ucz¹ce i testowe. Modele wykonam na zbiorze ucz¹cym, a nastêpnie oceniê model na zbiorze testowym.
+
+W swoim badaniu u¿yjê 4 metod:
+
+* regresji logistycznej,
+
+* klasyfikatora naiwnego Bayesa,
+
+oraz 2 metod tworzenia drzew decyzyjnych:
+
+* boosting,
+
+* lasy losowe.
+
+Poni¿ej przedstawiam strukturê danych, na których bêdê wykonywaæ projekt.
+
+```{r}
+str(data)
+```
+
+Jak widaæ moje dane posiadaj¹ 614 obserwacji oraz 13 zmiennych:
+
+* Loan_ID - jest to indywidualny numer ka¿dej obserwacji, zmienna ta nie jest potrzebna do dalszego badania - usunê j¹.
+
+* Gender - zmienna p³eæ jest to zmienna czynnikowa - przyjmuje trzy wartoœci - mê¿czyzna, kobieta oraz brak. Pusta wartoœæ oznacza, ¿e brakuje informacji na temat p³ci, zamieniê t¹ wartoœæ na NA i zmienna p³eæ bêdzie mia³a dwa czynniki.
+
+* Married - zmienna to oznacza czy ktoœ jest w zwi¹zku ma³¿eñskim. Równie¿ jest to zmienna czynnikowa i przyjmuje trzy wartoœci - tak, nie oraz pust¹ wartoœæ, któr¹ podobnie jak wczeœniej zamieniê na NA.
+
+* Dependents - liczba osób zale¿nych od osoby ubiegaj¹cej siê o kredyt. Jest to zmienna czynnikowa i przyjmuje 5 poziomów - 0, 1, 2, 3+ oraz pusty, który jak wczeœniej zamieniê na wartoœci NA.
+
+* Education - zmienna czynnikowa z dwoma poziomami - tak i nie, która oznacza, czy osoba ubiegaj¹ca siê o kredyt ma wykszta³cenie wy¿sze.
+
+* Self_Employed - oznacza czy dana osoba jest samozatrudniona. Jest to zmienna czynnikowa z trzema poziomami - tak, nie oraz pusty, który zamieniê na wartoœci NA.
+
+* ApplicantIncome - zmienna numeryczna oznaczaj¹ca przychód wnioskuj¹cego o kredyt.
+
+* CoapplicantIncome - równie¿ zmienna numeryczna oznaczaj¹ca przychód wspó³wnioskuj¹cego o kredyt.
+
+* LoanAmount - zmienna numeryczna oznaczaj¹ca kwotê kredytu w tysi¹cach.
+
+* Loan_Amount_Term - zmienna numeryczna oznaczaj¹ca d³ugoœæ trwania po¿yczki w miesi¹cach.
+
+* Credit_History - zmienna numeryczna oznaczaj¹ca czy przesz³oœæ kredytowa danej osoby spe³nia wytyczne. Zamieniê j¹ na zmienn¹ czynnikow¹ z dwoma poziomami - tak oraz nie.
+
+* Property_Area - zmienna czynnikowa, która oznacza, gdzie jest posiad³oœæ na któr¹ wnioskodawca chce uzyskaæ kredyt. Przyjmuje ona trzy wartoœci - wiejski, pó³miejski oraz miejski.
+
+* Loan_Status - zmienna objaœniana, równie¿ czynnikowa z dwoma poziomami - tak oraz nie. Oznacza czy dana osoba uzyska³a kredyt.
+
+Poni¿ej kod, który umo¿liwia wykonanie mi zmian w danych o których pisa³am wy¿ej. Zmieniê równie¿ poziomy zmiennej Loan_Status na 0 oraz 1.
+
+```{r echo=TRUE}
+data <- data[,-1]
+data$Credit_History <- as.factor(data$Credit_History)
+levels(data$Gender)[levels(data$Gender)==""] <- NA
+levels(data$Married)[levels(data$Married)==""] <- NA
+levels(data$Dependents)[levels(data$Dependents)==""] <- NA
+levels(data$Self_Employed)[levels(data$Self_Employed)==""] <- NA
+
+#LoanStatus - Y = 1, N = 0
+levels(data$Loan_Status) = c(0,1)
+
+```
+
+###Statystyki opisowe
+
+Przedstawiê teraz podstawowe statystyki opisowe zmiennych.
+
+```{r}
+summary(data)
+```
+
+Mo¿na zauwa¿yæ, ¿e a¿ w 7 zmiennych objaœniaj¹cych wystêpuj¹ wartoœci NA. Zajmê siê nimi w nastêpnym kroku. 
+
+Poza tym ze statystyk mo¿na wyci¹gn¹æ i¿ w zbiorze danych jest wiêcej:
+
+* mê¿czyzn ni¿ kobiet,
+
+* osób w zwi¹zku ma³¿eñskim ni¿ bez,
+
+* osób, które nie posiadaj¹ osób zale¿nych od siebie,
+
+* osób, które posiadaj¹ wykszta³cenie wy¿sze,
+
+* osób, które nie s¹ samozatrudnione,
+
+* osób z histori¹ kredytow¹,
+
+* posiad³oœci na terenach pó³miejskich - nie s¹ to jednak a¿ tak du¿e ró¿nice.
+
+Widaæ równie¿ du¿a rozbie¿noœæ w zmiennej ApplicantIncome oraz CoapplicantIncome - wystêpuj¹ zarobki bardzo ma³e, a równie¿ olbrzymie. Kwota kredytu waha siê od 9 do 700, a jej œrednia to 146,4. Czas trwania kredytu waha siê od 12 do 480 miesiêcy. 
+
+W przypadku zmiennej objaœnianej widaæ, ¿e wiêcej razy udzielono kredytu ni¿ odmówiono. 
+
+
+W celu lepszej wizualizacji danych przedstawiê histogramy dla zmiennych czynnikowych oraz wykresy pude³kowe dla zmiennych numerycznych.
+
+```{r}
+  p1 <- ggplot(data, aes(x=Loan_Status)) + ggtitle("Histogram - status kredytu") + ylab("liczebnoœæ") + 
+    geom_bar() 
+  p2 <- ggplot(data, aes(x=Gender)) + ggtitle("Histogram - p³eæ") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p3 <- ggplot(data, aes(x=Married)) + ggtitle("Histogram - zwi¹zek ma³¿eñski") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p4 <- ggplot(data, aes(x=Dependents)) + ggtitle("Histogram - osoby zale¿ne") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p5 <- ggplot(data, aes(x=Education)) + ggtitle("Histogram - edukacja") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p6 <- ggplot(data, aes(x=Self_Employed)) + ggtitle("Histogram - samozatrudnienie") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p7 <- ggplot(data, aes(x=Credit_History)) + ggtitle("Histogram - historia kredytowa") + ylab("liczebnoœæ") + 
+    geom_bar()
+  p8 <- ggplot(data, aes(x=Property_Area)) + ggtitle("Histogram - teren posiad³oœci") + ylab("liczebnoœæ") + 
+    geom_bar()
+  grid.arrange(p1,p2,p3,p4, nrow=2)
+  grid.arrange(p5,p6,p7,p8, nrow=2)
+
+  
+  p1 <- ggplot(data, aes(y=ApplicantIncome)) + ggtitle("Wykres pude³kowy - przychód osoby wnioskuj¹cej") + 
+    geom_boxplot()
+  p2 <- ggplot(data, aes(y=CoapplicantIncome)) + ggtitle("Wykres pude³kowy - przychód osoby wspó³wnioskuj¹cej") + 
+    geom_boxplot()
+  p3 <- ggplot(data, aes(y=LoanAmount)) + ggtitle("Wykres pude³kowy - kwota kredytu") + 
+    geom_boxplot()
+  p4 <- ggplot(data, aes(y=Loan_Amount_Term)) + ggtitle("Wykres pude³kowy - czas trwania kredytu") + 
+    geom_boxplot()
+
+  grid.arrange(p1,p2,p3,p4, nrow=2)
+```
+
+Powy¿sze wykresy dobrze wizualizuj¹ wczeœniej zamieszczone statystyki opisowe. W przypadku wykresów pude³kowych mo¿na zauwa¿yæ, ¿e wystêpuje du¿o wartoœci odstaj¹cych - bêdê siê nimi zajmowaæ w dalszej czêœci projektu. Patrz¹c siê na wykres zmiennej czas trwania po¿yczki mo¿na siê zastanowiæ czy nie warto zamieniæ jej na zmienn¹ czynnikow¹. Poni¿ej przedstawiam jej histogram.
+
+```{r}
+  ggplot(data, aes(x=as.factor(Loan_Amount_Term))) + ggtitle("Histogram - czas trwania po¿yczki") + ylab("liczebnoœæ") + 
+    geom_bar()
+```
+
+Mo¿na zauwa¿yæ, ¿e g³ównie po¿yczkê udziela siê na 360 miesiêcy, a potem na 180. Pozosta³e wartoœci wystêpuj¹ rzadko. Zostawiam t¹ zmienn¹ jako numeryczn¹, ze wzglêdu na to, ¿e zmienna ta mo¿e przyjmowaæ równie¿ inne wartoœci, a nie tylko te w zbiorze danych.
+
+
+
+###Zale¿noœci
+
+Przedstawiê teraz zale¿noœci jakie wystêpuj¹ miêdzy zmiennymi objaœniaj¹cymi, a objaœnian¹.
+
+Najpierw przedstawiê tabele dla zmiennych czynnikowych.
+
+* zmienna p³eæ
+
+```{r}
+table(data$Gender,data$Loan_Status)
+```
+
+* zmienna ma³¿eñstwo
+
+```{r}
+  table(data$Married,data$Loan_Status)
+```
+
+* zmienna osoby zale¿ne
+
+```{r}
+  table(data$Dependents,data$Loan_Status)
+```
+
+* zmienna edukacja
+
+```{r}
+  table(data$Education,data$Loan_Status)
+```
+
+* zmienna samozatrudnienie
+```{r}
+  table(data$Self_Employed,data$Loan_Status)
+```
+
+* zmienna historia kredytowa
+
+```{r}
+  table(data$Credit_History,data$Loan_Status)
+```
+
+* zmienna miejsce posiad³oœci
+
+```{r}
+  table(data$Property_Area,data$Loan_Status)
+```
+
+W przypadku zmiennej edukacja mo¿na zauwa¿yæ, ¿e osoby z wykszta³ceniem w wiêkszym stopniu uzyskiwa³y kredyt. Przy zmiennej historia kredytowa widaæ du¿¹ dysproporcjê - osoby, które nie posiadaj¹ historii kredytowej zgodnej z oczekiwaniami banku rzadko uzyskuj¹ kredyt. Zale¿noœæ mo¿na równie¿ odkryæ przy zmiennej miejsce posiad³oœci - czêœciej uzyskuje siê kredyt na posiad³oœæ w terenie pó³miejskim. W przypadku pozosta³ych zmiennych nie zauwa¿y³am ¿adnych zale¿noœci.
+
+Poni¿ej wykresy pude³kowe dla zmiennych numerycznych w zale¿noœci od tego czy uzyskano kredyt czy te¿ nie.
+
+```{r}
+  p1 <- ggplot(data=data, aes(y= ApplicantIncome, x= Loan_Status)) +  ggtitle("Przychód osoby wnioskuj¹cej") +  geom_boxplot()
+  p2 <- ggplot(data=data, aes(y= CoapplicantIncome, x= Loan_Status)) + ggtitle("Przychód osoby wspó³wnioskuj¹cej") +  geom_boxplot()
+  p3 <- ggplot(data=data, aes(y= LoanAmount, x= Loan_Status)) + ggtitle("Kwota kredytu") + geom_boxplot()
+  p4 <- ggplot(data=data, aes(y= Loan_Amount_Term, x= Loan_Status)) + ggtitle("Czas trwania kredytu") + geom_boxplot()
+  
+  grid.arrange(p1,p2,p3,p4, nrow=2)
+  
+```
+
+Mo¿na zauwa¿yæ, ¿e w zmiennej przychód osoby wspó³wnioskuj¹cej mediana jest wiêksza przy uzyskaniu kredytu. Jednak co zaskakuj¹ce skrajnie du¿y przychód zarówno w przychodzie osoby wnioskuj¹cej jak i wspó³wnioskuj¹cej nie zapewni³y uzyskania kredytu. Myœlê, ¿e s¹ to wartoœci odstaj¹ce, gdy¿ nie jest to logiczne. Mo¿e byæ to te¿ spowodowane z³¹ przesz³oœci¹ kredytow¹ lub niebezpieczn¹ inwestycj¹. W pozosta³ych zmiennych nie widaæ zale¿noœci.
+
+
+
+##Przygotowanie danych
+
+W tej czêœci zajmê siê przygotowaniem danych do docelowego badania. Zacznê od obserwacji z wartoœciami NA, nastêpnie zajmê siê problemem wartoœci odstaj¹cych, a na samym koñcu podzielê zbiór danych na ucz¹cy i testowy.
+
+###Obserwacje z wartoœciami NA
+
+Zacznê od przedstawienia ile wystêpuje wartoœci NA w ka¿dej zmiennej.
+
+```{r}
+  sapply(data, function(x) sum(is.na(x)))
+```
+
+Mo¿na zauwa¿yæ, ¿e wartoœci NA jest sporo. Zbiór danych ma oko³o 600 obserwacji, wiêc usuniêcie wartoœci NA bardzo by go pomniejszy³o. Ze wzglêdu na to wybieram metodê dziêki której bêdê w stanie wype³niæ te wartoœci.
+
+W moim badaniu do uzupe³nienia wartoœci NA pos³u¿ê siê funkcj¹ `mice` z pakietu o tej samej nazwie. Automatycznie dobiera ona najlepsz¹ metodê uzupe³niania dla danej zmiennej. Ka¿da niekompletna zmienna jest przypisywana za pomoc¹ osobnego modelu. Ze zmiennych na podstawie, których funkcja ta bêdzie przewidywaæ wartoœci NA usuwam zmienn¹ objaœnian¹, aby nie zak³ama³o to póŸniejszych wyników. Nastêpnie za pomoc¹ `complete` uzupe³niam pocz¹tkowe dane wartoœciami uzyskanymi dziêki funkcji `mice`.
+
+```{r echo=TRUE, include=FALSE}
+
+#inicjuje metodê
+  init = mice(data, maxit=0)
+  meth = init$method
+  predM = init$predictorMatrix
+  
+  #usuwam Loan_Status ze zmiennych na podstawie, których predykuje siê NA
+  predM[, c("Loan_Status")]=0
+  
+  #dla powtarzalnoœci ustalam set.seed
+  set.seed(103)
+  data_imputed <- mice(data, method = meth, predcitorMatrix = predM, m=5)
+  data_imputed <- complete(data_imputed)
+
+```
+
+Przedstawiê poni¿ej jakie metody uzupe³niania wartoœci dobra³a ta funkcja dla zmiennych. 
+
+```{r}
+meth
+```
+
+Dla zmiennych binarnych - Gender, Married, Self_Employed oraz Credit_History zosta³a dobrana regresja logistyczna. Dla zmiennej czynnikowej Dependents aproksymacji wielomianowej. Natomiast dla zmiennych numerycznych LoanAmount oraz Loan_Amount_Term u¿yto metody Predictive Mean Matching (przewidywania œrednich).
+
+Poni¿ej przedstawiê nowe statystyki opisowe.
+
+```{r}
+  summary(data_imputed)
+```
+
+Widaæ ju¿, ¿e nie wystêpuj¹ wartoœci NA, a statystyki nieznacz¹co siê zmieni³y.
+
+
+###Wartoœci odstaj¹ce
+
+Jak ju¿ wspomnia³am wczeœniej analizuj¹c zmienne wystêpuj¹ zmienne z wartoœciami odstaj¹cymi. S¹ to zmienne dotycz¹ce przychodu wnioskodawcy i wspó³wnioskodawcy, kwoty po¿yczki oraz czasu jej trwania. Wartoœci odstaj¹ce mog¹ byæ spowodowane tym, ¿e tylko jedna z osób wnioskuj¹cych o po¿yczkê zarabia. Tworzê wiêc now¹ zmienn¹ o nazwie Income (przychód), która jest sum¹ ich przychodów. Liczê, ¿e dziêki temu iloœæ wartoœci odstaj¹cych zmniejszy siê. Nastêpnie du¿e oraz ma³e kwoty kredytu mog¹ byæ powi¹zane z d³ugim oraz krótkim czasem jej trwania. Tworzê równie¿ now¹ zmienn¹ Loan, która jest kwot¹ kredytu podzielon¹ przez czas jego trwania. Poni¿ej wyœwietlam wykresy pude³kowe nowych zmiennych. 
+
+```{r}
+  data_imputed <- mutate(data_imputed, Income = ApplicantIncome + CoapplicantIncome)
+  data_imputed <- mutate(data_imputed, Loan = LoanAmount/Loan_Amount_Term)
+  
+  
+  #usuniecie niepotrzebnych kol
+  data_imputed <- data_imputed[,-(6:9)]
+  
+  p1 <- ggplot(data_imputed, aes(y=Income)) + ggtitle("Zmienna przychód")+ geom_boxplot()
+  p2 <- ggplot(data_imputed, aes(y=Loan)) + ggtitle("Zmienna kredyt")+ geom_boxplot()
+  grid.arrange(p1,p2, nrow=1)
+  
+```
+
+Pomimo wprowadzenia nowych zmiennych wartoœci odstaj¹ce dalej wystêpuj¹, nie jest ich ju¿ jednak tak du¿o jak wczeœniej. Decyduje siê usun¹æ obserwacje ze zmiennej przychód powy¿ej 30 000 oraz ze zmiennej kredyt powy¿ej 2. 
+
+```{r}
+  data_imputed<- data_imputed[data_imputed$Income<30000,]
+  data_imputed<- data_imputed[data_imputed$Loan<2,]
+  
+  p1 <- ggplot(data_imputed, aes(y=Income)) + ggtitle("Zmienna przychód")+  geom_boxplot()
+  p2 <- ggplot(data_imputed, aes(y=Loan)) + ggtitle("Zmienna kredyt")+geom_boxplot() 
+  grid.arrange(p1,p2, nrow=1)
+```
+
+Niestety wartoœci odstaj¹ce dalej wystêpuj¹. Nie s¹ one jednak tak skrajne jak wczeœniej i jest ich o wiele mniej. Pozostawiam wiêc dane w takiej postaci.
+
+
+###Podzia³ zbioru na ucz¹cy i testowy
+
+Podzielê teraz swoje dane na zbiór ucz¹cy oraz testowy 80% moich danych bêdzie treningowych, a 20% testowych. Poni¿ej kod, który umo¿liwia mi podzia³.
+
+```{r echo=TRUE}
+  set.seed(1)
+  
+  division   <- sample(nrow(data_imputed), round(0.8*nrow(data_imputed)), replace = F)
+  
+  train <- data_imputed[division,]
+  test <- data_imputed[-division,] 
+```
+
+W celu zbadania czy zbiory te s¹ mniej wiêcej równe przedstawiam histogramy zmiennych czynnikowych oraz wykresy pude³kowe zmiennych numerycznych.
+
+```{r}
+  p1 <- ggplot(train, aes(x=Loan_Status)) + ggtitle("Zbiór ucz¹cy - status po¿yczki") + 
+    geom_bar()
+  p2 <- ggplot(test, aes(x=Loan_Status)) + ggtitle("Zbiór testowy - status po¿yczki") + 
+    geom_bar()
+  
+  p3 <- ggplot(train, aes(x=Gender)) + ggtitle("Zbiór ucz¹cy - p³eæ") + 
+    geom_bar()
+  p4 <- ggplot(test, aes(x=Gender)) + ggtitle("Zbiór testowy - p³eæ") + 
+    geom_bar()
+  
+  p5 <- ggplot(train, aes(x=Married)) + ggtitle("Zbiór ucz¹cy - ma³¿eñstwo") + 
+    geom_bar()
+  p6 <- ggplot(test, aes(x=Married)) + ggtitle("Zbiór testowy - ma³¿eñstwo") + 
+    geom_bar()
+  
+  p7 <- ggplot(train, aes(x=Dependents)) + ggtitle("Zbiór ucz¹cy - zale¿ni") + 
+    geom_bar()
+  p8 <- ggplot(test, aes(x=Dependents)) +  ggtitle("Zbiór testowy - zale¿ni") + 
+    geom_bar()
+  
+  p9 <- ggplot(train, aes(x=Education)) + ggtitle("Zbiór ucz¹cy - edukacja") + 
+    geom_bar()
+  p10 <- ggplot(test, aes(x=Education)) + ggtitle("Zbiór testowy - edukacja") + 
+    geom_bar()
+  
+  p11 <- ggplot(train, aes(x=Self_Employed)) + ggtitle("Zbiór ucz¹cy - samozatrudnienie") + 
+    geom_bar()
+  p12 <- ggplot(test, aes(x=Self_Employed)) + ggtitle("Zbiór testowy - samozatrudnienie") + 
+    geom_bar()
+  
+  p13 <- ggplot(train, aes(x=Credit_History)) + ggtitle("Zbiór ucz¹cy - historia kredytowa") + 
+    geom_bar()
+  p14 <- ggplot(test, aes(x=Credit_History)) + ggtitle("Zbiór testowy - historia kredytowa") + 
+    geom_bar()
+  
+  p15 <- ggplot(train, aes(x=Property_Area)) + ggtitle("Zbiór ucz¹cy - teren posiad³oœci") + 
+    geom_bar()
+  p16 <- ggplot(test, aes(x=Property_Area)) + ggtitle("Zbiór testowy  - teren posiad³oœci") + 
+    geom_bar()
+  
+  grid.arrange(p1,p2,p3,p4,p5,p6, nrow=3)
+  grid.arrange(p7,p8,p9,p10,p11,p12, nrow=3)
+  grid.arrange(p13,p14,p15,p16, nrow=2)
+  
+  p1 <- ggplot(train, aes(y=Income)) + ggtitle("Zbiór ucz¹cy - przychód") + geom_boxplot()  
+  p2 <- ggplot(test, aes(y=Income)) + ggtitle("Zbiór testowy - przychód") + geom_boxplot()
+  
+  p3 <- ggplot(train, aes(y=Loan)) + ggtitle("Zbiór ucz¹cy - po¿yczka") +geom_boxplot()
+  p4 <- ggplot(test, aes(y=Loan)) + ggtitle("Zbiór testowy - po¿yczka") +geom_boxplot()
+  
+  grid.arrange(p1,p2,p3,p4, nrow=2)
+```
+
+Wiadomo, ¿e zbiory te nie s¹ identyczne, lecz ró¿nice w nich s¹ niewielkie. Uznajê wiêc ten podzia³ za wystarczaj¹co dobry do dalszej czêœci badania.
+
+
+##Metody przewidywania
+
+Jak ju¿ wspomnia³am wczeœniej w badaniu u¿yjê 4 metod, a nastêpnie postaram wybraæ siê najlepsz¹. Po ka¿dej metodzie przedstawiê macierz b³êdu. Przedstawiê równie¿ krzyw¹ ROC oraz wartoœæ AUC. 
+
+###Regresja logistyczna
+
+Regresja logistyczna to rodzaj regresji u¿ywany, gdy zmienna objaœniana przyjmuje tylko dwie wartoœci. Zmienne objaœniaj¹ce mog¹ przyjmowaæ charakter nominalny, porz¹dkowy, przedzia³owy lub ilorazowy. Model ten okreœla prawdopodobieñstwo, ¿e zmienna objaœniana (Y) nale¿y do danej kategorii.  
+
+Krzywa logistyczna wyra¿ona jest poni¿szym wzorem:
+
+$$p(X) = \frac{e^{\beta_0 + \beta_1X_1 + ... + \beta_pX_p}}{1 + e^{\beta_0 + \beta_1X_1 + ... + \beta_pX_p }} $$
+
+gdzie $X = (X_1, ..., X_p)$ to p zmiennych objaœniaj¹cych, a $\beta_0, ... \beta_p$ to wspó³czynniki.
+
+Po utworzeniu modelu bêdê przewidywaæ wartoœæ Y za jego pomoc¹. U¿yjê wtedy równie¿ punktu odciêcia tj. od jakiej wartoœci prawdopodobieñstwa bêdê przypisywaæ zmienn¹ Y do 1. Ustalam go jako 0.69, gdy¿ w ca³ym zbiorze wystêpuje 69% przypadków, gdzie udzielono komuœ kredytu. 
+
+Do stworzenia modelu regresji logistycznej u¿yjê funkcji `glm` z pakietu `stats`.
+
+Przedstawiam poni¿ej utworzony model.
+
+```{r echo=TRUE}
+  log.model = glm(Loan_Status~., family = binomial, data=train)
+  summary(log.model)
+```
+
+Mo¿na zauwa¿yæ, ¿e nie wszystkie zmienne okaza³y siê byæ istotne. Na poziomie istotnoœci 0.05 okaza³y siê byæ wa¿ne tylko dwie zmienne - historia kredytowa oraz miejsce posiad³oœci. Natomiast na poziomie 0.1 - edukacja. W celu stworzenia dok³adniejszego modelu z mniejsz¹ iloœci¹ zmiennych u¿yjê funkcji `stepAIC` z pakietu `MASS`. Wykonuje ona wsteczno krokowy wybór modelu za pomoc¹ AIC. Poni¿ej wynik funkcji oraz przedstawiony koñcowy model.
+
+```{r echo=TRUE}
+  stepAIC(log.model, trace = 0, direction = "backward")
+  
+  log.model2 <- glm(formula = Loan_Status ~ Married + Education + Credit_History + 
+        Property_Area, family = binomial, data = train)
+  summary(log.model2)
+```
+
+Tym razem zmienna edukacja okaza³a siê byæ nieistotna. Za to istotna jest zmienna ma³¿eñstwo. 
+
+Wykonam teraz predykcje na zbiorze treningowym. Przedstawiê nastêpnie macierz b³êdu, krzyw¹ ROC oraz wartoœæ AUC. W momencie, gdy krzywa ROC jest prost¹, czyli wartoœæ AUC wynosi 0.5, model sprawdza siê tak samo jak rzut monet¹. Im wy¿sza wartoœæ AUC tym lepiej. 
+
+```{r}
+  #treningowe
+  log.pred.train <- predict(log.model2, newdata = train, type = "response")
+  log.pred.train <- ifelse(log.pred.train>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(log.pred.train), train$Loan_Status, positive = '1')
+  tmp
+  
+  acc_log_tr <- tmp$overall[1]
+  
+  ROC <- roc(train$Loan_Status, log.pred.train)
+  plot(ROC)
+  auc_log_tr <- auc(ROC)
+  auc_log_tr
+```
+
+Analizuj¹c macierz b³êdu mo¿na zauwa¿yæ, ¿e model lepiej rozpoznaje sytuacje, gdzie udzielano kredytu. Skutecznoœæ modelu (ACC) wynosi 0.81, co jest dobrym wynikiem. Natomiast wartoœæ AUC jest mniejsza - 0.74. 
+
+Przedstawiê teraz jak sprawdza siê model dla danych testowych.
+
+```{r}
+  #testowe
+  log.pred.test <- predict(log.model2, newdata = test, type = "response")
+  log.pred.test <- ifelse(log.pred.test>.69, 1,0)
+  tmp <- confusionMatrix(as.factor(log.pred.test), test$Loan_Status,positive = '1')
+  tmp
+
+  acc_log_test <- tmp$overall[1]
+  
+  ROC <- roc(test$Loan_Status, log.pred.test)
+  plot(ROC)
+  auc_log_test <- auc(ROC)
+  auc_log_test
+```
+
+Skutecznoœæ modelu niewiele pogorszy³a siê wzglêdem zbioru treningowego. Wartoœæ specyficznoœci w obu przypadkach jest niska - oko³o 0.5, oznacza to, ¿e obserwacje, gdzie odmówiono kredytu s¹ s³abo rozpoznawane. Wartoœæ AUC równie¿ siê pomniejszy³a - wynosi 0.705.
+
+
+###Klasyfikator naiwny Bayesa
+
+Klasyfikator naiwny Bayesa to prosty klasyfikator opieraj¹cy siê na prawdopodobieñstwach. Mimo prostoty metody, czêsto dzia³a ona lepiej od innych, bardzo skomplikowanych metod klasyfikuj¹cych. Teoria ta opiera siê na za³o¿eniu o wzajemnej niezale¿noœci predykatorów. 
+
+Korzystaj¹c z twierdzenia Bayesa:
+
+$$p(C|F_1,...F_n) = \frac{p(C)p(F_1,...f_n|C)}{p(F_1,...f_n)}$$
+
+gdzie C to wartoœci klas (0,1), a F to zmienne objaœniaj¹ce.
+
+Ze wzglêdu na za³o¿enie o niezale¿noœci model ten mo¿na zapisaæ jako:
+
+$$p(C|F_1,...F_n) = p(C)p(F_1|C)p(F_2|C)...p(f_n|C)$$
+
+W metodzie tej równie¿ bêdê u¿ywaæ progu odciêcia i ustawiê go ponownie na 0.69. Do wykonania tej metody pos³u¿ê siê funkcj¹ `naive_bayes` z pakietu `naivebayes`.
+
+Z uwagi na to, ¿e funkcja ta przyjmuje tylko zmienne czynnikowe zamieniam zmienne Loan oraz Income na takie. Tworzê w ka¿dej z nich 4 grupy w zale¿noœci od kwartyli:
+
+* pierwsza grupa mniejsza od pierwszego kwartyla,
+
+* druga grupa mniejsza od mediany,
+
+* trzecia grupa mniejsza od trzeciego kwartyla,
+
+* czwarta grupa wiêksza od trzeciego kwartyla.
+
+Wykorzystam do tego funkcjê `cut`. Poni¿ej kod, który mi to umo¿liwa.
+
+```{r echo=TRUE}
+#zamieniæ wszystkie na factor
+  train_fac <- train
+  test_fac <- test
+  
+  #4 grupy w zaleznosci od kwartyli
+  summary(data_imputed$Loan)
+  summary(data_imputed$Income)
+  
+  loan_fac <- cut(data_imputed$Loan,breaks=c(0,0.2847, 0.3611,0.5,1.7143),labels = c("1","2","3","4"))
+  income_fac <- cut(data_imputed$Income,breaks=c(0,4163, 5332,7300,27500),labels = c("1","2","3","4"))
+
+  train_fac$Loan <- loan_fac[division]
+  train_fac$Income <- income_fac[division]  
+  train_fac = data.frame(train_fac[,-8], Loan_Status = train_fac[,8])
+  
+  test_fac$Loan <- loan_fac[-division]
+  test_fac$Income <- income_fac[-division] 
+  test_fac = data.frame(test_fac[,-8], Loan_Status = test_fac[,8])
+```
+
+
+Wykonam teraz model, a nastêpnie przedstawiê jego macierz b³êdu oraz krzyw¹ ROC na zbiorze treningowym.
+
+```{r echo=TRUE}
+nb.model <- naive_bayes(Loan_Status~.,data=train_fac)
+  
+  #train
+  nb.pred.train <- predict(nb.model, train_fac,type="prob")[,2]
+  nb.pred.train <- ifelse(nb.pred.train>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(nb.pred.train), train_fac$Loan_Status, positive = '1')
+  tmp
+  
+  acc_nb_tr <- tmp$overall[1]
+  
+  ROC <- roc(train_fac$Loan_Status, nb.pred.train)
+  plot(ROC)
+  auc_nb_tr <- auc(ROC)
+  auc_nb_tr
+```
+
+Wyniki na zbiorze treningowym s¹ bardzo podobne do wyników regresji logistycznej równie¿ na tym zbiorze. Skutecznoœæ wynosi 0.82, specyficznoœæ jest o wiele ni¿sza od wra¿liwoœci, a wartoœæ AUC wynosi 0.76.
+
+Teraz analogicznie przedstawiê wyniki dla zbioru testowego.
+
+```{r}
+  #test
+  nb.pred.test <- predict(nb.model, test_fac,type="prob")[,2]
+  nb.pred.test <- ifelse(nb.pred.test>.69, 1, 0)
+  tmp <- confusionMatrix(as.factor(nb.pred.test), test_fac$Loan_Status, positive = '1')
+  tmp
+  
+  acc_nb_test <- tmp$overall[1]
+  
+  ROC <- roc(test_fac$Loan_Status, nb.pred.test)
+  plot(ROC)
+  auc_nb_test <- auc(ROC) 
+  auc_nb_test
+```
+
+Mo¿na zauwa¿yæ jednak, ¿e w przypadku zbioru testowego sprawdza siê lepiej ni¿ regresja logistyczna. Niestety ponownie specyficznoœæ jest niska. 
+
+###Boosting
+
+Boosting to podejœcie w celu zwiêkszenia dok³adnoœci predykcji zwyk³ego drzewa decyzyjnego. Drzewa powstaj¹ sekwencyjnie - ka¿de drzewo jest tworzone u¿ywaj¹c informacji z poprzednich drzew. Ka¿de drzewo powstaje na zmodyfikowanej wersji zbioru pocz¹tkowego. 
+
+Metoda boosting uczy siê relatywnie wolno. Bior¹c obecny model, dopasowuje siê drzewo do reszt z niego. W momencie tworzenia nowych drzew bierze siê pod uwagê w³aœnie reszty, a nie zmienn¹ objaœnian¹ Y. Za pomoc¹ nowo utworzonego drzewa aktualizuje siê reszty. Ka¿de z tych drzew mo¿e byæ ma³e, definiuje to parametr d, który ustala siê samemu. W ten sposób powoli poprawia siê dok³adnoœæ  f ^ w regu³ach, gdzie by³y najwiêksze problemy. Parametr kurczenia siê lambda jeszcze bardziej zwalnia spowalnia ten proces, aby wiêcej ró¿nych drzew mog³o wp³yn¹æ na reszty.
+
+W celu wykonania tego algorytmu pos³u¿ê siê funkcj¹ `gbm` z pakietu o tej samej nazwê. Ponownie punkt odciêcia przy predykcji ustawiê na 0.69. Funkcja ta jako zmienn¹ objaœnian¹ nie przyjmuje zmiennej czynnikowej, lecz numeryczn¹. Zamieniam wiêc j¹ na tak¹. W celu zapewnienia powtarzalnoœci drzew u¿ywam funkcji `set.seed`. 
+
+Funkcja `gbm` przyjmuje wiele parametrów. Najpierw ustalam iloœæ drzew jako 10000, a pozosta³ych nie zmieniam. Poni¿ej przedstawiam w jaki sposób tworzê drzewo, a nastêpnie macierz b³êdu oraz krzyw¹ ROC dla otrzymanego modelu na danych treningowych.
+
+```{r echo=TRUE}
+  train_num <- train
+  train_num$Loan_Status <- as.numeric(train_num$Loan_Status)-1
+  test_num <- test
+  test_num$Loan_Status <- as.numeric(test_num$Loan_Status)-1
+  
+  set.seed(1)
+  boostTree <- gbm(Loan_Status~.,data=train_num, n.trees = 10000, distribution = "bernoulli")
+ 
+  #train
+  boost.pred.train <- predict(boostTree, newdata = train_num, n.trees = 10000, type="response")
+  boost.pred.train <- ifelse(boost.pred.train>0.69, 1, 0)
+  
+  tmp <- confusionMatrix(as.factor(boost.pred.train), as.factor(train_num$Loan_Status), positive = '1')
+  tmp
+  
+  acc_boost_tr <- tmp$overall[1]
+  
+  ROC <- roc(train_num$Loan_Status, boost.pred.train)
+  plot(ROC)
+  auc_boost_tr <- auc(ROC)
+  auc_boost_tr
+```
+
+Jak widaæ w tej metodzie wzros³a zarówno wartoœæ ACC jak i AUC. Równie¿ warto zauwa¿yæ, i¿ wzros³a wartoœæ specyficznoœci. Model ten bardzo dobrze sprawdza siê dla danych treningowych. Wartoœci s¹ bliskie 1. Tak dobre wyniki mog¹ œwiadczyæ o przeuczeniu modelu.
+
+Analogicznie przedstawiê teraz wyniki otrzymane dla zbioru testowego.
+
+```{r}
+  #test
+  boost.pred.test <- predict(boostTree, newdata = test_num, n.trees = 10000, type="response")
+  boost.pred.test <- ifelse(boost.pred.test>0.69, 1, 0)
+  
+  tmp <- confusionMatrix(as.factor(boost.pred.test), as.factor(test_num$Loan_Status), positive = '1')
+  tmp
+  
+  acc_boost_test <- tmp$overall[1]
+  
+  ROC <- roc(test_num$Loan_Status, boost.pred.test)
+  plot(ROC)
+  auc_boost_test <- auc(ROC)
+  auc_boost_test
+```
+
+Niestety dla danych testowych model ten okazuje siê byæ o wiele s³abszy - ACC maleje do 0.708, a AUC do 0.68. Jest to niepokoj¹ce.
+
+Przedstawiê teraz jak kszta³tuje siê wp³yw zmiennych objaœniaj¹cych na model przy pomocy funkcji `summary`.
+
+```{r echo=TRUE}
+  par(mar = c(5, 8, 1, 1))
+  summary(boostTree, las=2)
+
+```
+
+Okaza³o siê, ¿e przy u¿yciu tej metody dla modelu najwa¿niejsze s¹ zmienne: przychód, kredyt oraz liczba osób zale¿nych. Zmienne p³eæ oraz ma³¿eñstwo s¹ najmniej wa¿ne. Bardzo szokuj¹ce jest to, ¿e zmienna historia kredytowa nie wp³ywa bardzo na model.
+
+Spróbuje teraz polepszyæ wyniki modelu. Najpierw u¿yjê funkcji `gbm.perf`, która pozwoli otrzymaæ optymaln¹ iloœæ drzew, które powinny zostaæ wykonane do stworzenia modelu.
+
+```{r echo=TRUE}
+  #najlepsza iloœæ drzew
+  gbm.perf(object = boostTree,method="OOB")
+```
+
+Jak widaæ optymalna iloœæ drzew zosta³a okreœlona jako 108.
+
+Za pomoc¹ poni¿szego kodu bêdê zmieniaæ wartoœci parametrów funkcji `gbm`, a nastêpnie zbadam wartoœci ACC i wybiorê ten zbiór parametrów dla którego przyjmuje najwiêksz¹ wartoœæ.
+
+```{r echo=TRUE}
+  #najlepsze params
+  hyper_grid <- expand.grid(
+    shrinkage = c(.001,.01, .1, .3),
+    interaction.depth = c(1, 3, 5,7),
+    n.minobsinnode=c(5,10,15),
+    n.trees = c(108)
+  )
+  
+  acc <- c()
+  
+  for (i in 1:nrow(hyper_grid)) {
+    
+    set.seed(1)
+    
+    model <- gbm(formula = Loan_Status ~ ., 
+                 data = train_num,
+                 distribution = "bernoulli",
+                 n.trees=hyper_grid$n.trees[i],
+                 interaction.depth = hyper_grid$interaction.depth[i],
+                 shrinkage = hyper_grid$shrinkage[i]
+    )
+    
+    
+    pred <- predict(object = model,newdata = test_num, n.trees = hyper_grid$n.trees[i], type="response")
+    pred <- ifelse(pred>0.69, 1, 0)
+    
+    
+    tmp <- confusionMatrix(as.factor(pred), as.factor(test_num$Loan_Status), positive = '1')
+    acc[i] <- tmp$overall[1]
+    
+  }
+  
+  opt_i_acc <- which.max(acc)
+  print(hyper_grid[opt_i_acc,])
+```
+
+Stworzê teraz nowy model z powy¿szymi parametrami, a nastêpnie przedstawiê macierz b³êdu oraz krzyw¹ ROC dla zbioru testowego.
+
+```{r}
+  set.seed(1)
+  
+  boostTree <- gbm(formula = Loan_Status ~ ., 
+                     data = train_num,
+                     distribution = "bernoulli",
+                     n.trees=108,
+                     interaction.depth = 1,
+                     shrinkage = .001,
+                     n.minobsinnode = 5
+  )
+  
+  
+  #train
+  boost.pred.train <- predict(boostTree, newdata = train_num, n.trees = 108, type="response")
+  boost.pred.train <- ifelse(boost.pred.train>0.69, 1, 0)
+  
+  tmp <- confusionMatrix(as.factor(boost.pred.train), as.factor(train_num$Loan_Status), positive = '1')
+  tmp
+  
+  acc_boost_tr <- tmp$overall[1]
+  
+  ROC <- roc(train_num$Loan_Status, boost.pred.train)
+  plot(ROC)
+  auc_boost_tr <- auc(ROC)
+  auc_boost_tr
+```
+
+Jak widaæ w porównaniu z pierwszym modelem wyniki s¹ o wiele gorsze. Specyficznoœæ wynosi mniej ni¿ 0.5. Przedstawiê jak kszta³tuj¹ siê wyniki dla zbioru testowego.
+
+```{r}
+  #test
+  boost.pred.test <- predict(boostTree, newdata = test_num, n.trees = 108, type="response")
+  boost.pred.test <- ifelse(boost.pred.test>0.69, 1, 0)
+  
+  tmp <- confusionMatrix(as.factor(boost.pred.test), as.factor(test_num$Loan_Status), positive = '1')
+  tmp
+  
+  acc_boost_test <- tmp$overall[1]
+  
+  ROC <- roc(test_num$Loan_Status, boost.pred.test)
+  plot(ROC)
+  auc_boost_test <- auc(ROC)
+  auc_boost_test
+```
+
+Jednak wyniki dla zbioru testowego s¹ lepsze ni¿ w przypadku pierwszego modelu. Specyficznoœæ ci¹gle jednak jest niska.
+
+Przedstawiê teraz jakie zmienne maj¹ wp³yw na model.
+
+```{r}
+  par(mar = c(5, 8, 1, 1))
+  summary(boostTree,las=2)
+```
+
+Model opiera siê tylko na jednej zmiennej - historia kredytowa. Jak widaæ mo¿na uzyskaæ ca³kiem dobre wyniki opieraj¹c siê tylko na niej. Jest to zaskakuj¹ce - w pierwszym modelu zmienna ta nie okaza³a siê byæ wa¿na. Warto siê te¿ zastanowiæ czy wyniki otrzymane za pomoc¹ tej metody s¹ wystarczaj¹co dobre - znacznie skróci³oby to procedury decyzji o otrzymaniu kredytu.
+
+
+###Lasy losowe
+
+Zwyk³e drzewo regresyjne ma bardzo du¿¹ wariancjê, czyli je¿eli podzieli siê dane treningowe losowo na pó³ i stworzy siê dla ka¿dego podzbioru drzewo regresyjne to mog¹ siê one okazaæ zupe³nie ró¿ne. Lasy losowe zmniejszaj¹ wariancjê pojedynczych drzew, lecz dodatkowo dekoreluj¹ drzewa. W przypadku, gdy wystêpuje jeden mocny predykator, prawdopodobnie wiêkszoœæ drzew bêdzie wykorzystywaæ t¹ zmienn¹ na samym pocz¹tku. Spowoduje to, ¿e drzewa bêd¹ do siebie bardzo podobne, wiêc prognozy z nich bêd¹ silnie skorelowane. W wyniku tego wariancja drzew nie zostanie tak bardzo zredukowana jak w przypadku nieskorelowanych drzew. Lasy losowe rozwi¹zuj¹ ten problem poprzez niewykorzystywanie wszystkich zmiennych objaœniaj¹cych.
+
+Algorytm lasów losowych :
+
+1.	Ze zbioru treningowego losuje siê ze zwracaniem B ró¿nych podzbiorów. Zazwyczaj liczebnoœæ podzbiorów jest taka sama jak zbioru treningowego.
+
+2.	Nastêpnie losuje siê m zmiennych objaœniaj¹cych z p mo¿liwych (m < p). Zazwyczaj m = $\sqrt{p}$.
+
+3.	Dla ka¿dego podzbioru tworzy siê drzewo regresyjne i dokonuje siê predykcji na jego podstawie.
+
+4.	Koñcowa predykcja to uœrednienie predykatorów powsta³ych z wielu podzbiorów.
+
+Jak widaæ algorytm ten mo¿e poprawiæ wyniki poprzedniego modelu, gdy¿ nie w ka¿dym drzewie bêdzie brana pod uwagê zmienna historia kredytowa.
+
+Do wykonania tego modelu u¿yjê funkcji `randomForest` z pakietu o tej samej nazwie. Tak samo jak w poprzednich metodach u¿yjê punktu odciêcia 0.69. 
+
+Poni¿ej przedstawiam model z domyœlnymi wartoœciami parametrów funkcji oraz macierz b³êdu z krzyw¹ ROC dla zbioru treningowego.
+
+```{r echo=TRUE}
+set.seed(222)
+  
+  rforest <- randomForest(Loan_Status ~ ., data=train)
+  
+  #train
+  
+  rf.pred.train <- predict(object = rforest,newdata = train, type = "prob")[,2]
+  rf.pred.train <- ifelse(rf.pred.train>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(rf.pred.train), as.factor(train$Loan_Status), positive = '1')
+  tmp
+  
+  acc_rf_tr <- tmp$overall[1]
+  
+  ROC <- roc(train$Loan_Status, rf.pred.train)
+  plot(ROC)
+  auc_rf_tr <- auc(ROC)
+  auc_rf_tr
+```
+
+Jak widaæ zarówno ACC jak i AUC jest bliskie 1. Ponownie mo¿e to œwiadczyæ o przeuczeniu modelu. Przedstawiê teraz wyniki dla danych testowych.
+
+```{r}
+  #test
+  
+  rf.pred.test <- predict(object = rforest,newdata = test, type = "prob")[,2]
+  rf.pred.test <- ifelse(rf.pred.test>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(rf.pred.test), as.factor(test$Loan_Status), positive = '1')
+  tmp
+  
+  acc_rf_test <- tmp$overall[1]
+  
+  ROC <- roc(test$Loan_Status, rf.pred.test)
+  plot(ROC)
+  auc_rf_test <- auc(ROC)
+  auc_rf_test
+```
+
+Ponownie, jak w przypadku metody boosting, obie miary znacz¹co siê pogorszy³y. Jest to bardzo niepo¿¹dane. W dalszych krokach postaram siê dopasowaæ parametry modelu tak, by poprawiæ skutecznoœæ modelu.
+
+Za pomoc¹ funkcji `varImpPlot` przedstawiê, które zmienne istotnie wp³ywaj¹ na powsta³y model.
+
+```{r echo=TRUE}
+  varImpPlot(rforest)
+```
+
+Najwa¿niejsza jest zmienna historia kredytu, a nastêpnie przychód i po¿yczka. Ponownie najmniej istotne okaza³y siê byæ zmienne p³eæ oraz ma³¿eñstwo. 
+
+Przedstawiê teraz kod za pomoc¹, którego sprawdzê ró¿ne kombinacje parametrów funkcji, a za koñcowe wybiorê te za pomoc¹, których otrzymana zosta³a najwiêksza wartoœæ ACC.
+
+```{r echo=TRUE}
+ #najlepsze param
+  hyper_grid <- expand.grid(
+    mtry=seq(1, 9, 1), #9 zminnych objaœniaj¹cych
+    nodesize=seq(2, 8, 1),
+    ntree=c(100, 200, 500, 800, 1000, 5000, 8000)
+  )
+  
+  acc <- c()
+  
+  for (i in 1:nrow(hyper_grid)) {
+    
+    set.seed(222)
+    
+    model <- randomForest(formula = Loan_Status ~ ., 
+                          data = train,
+                          mtry = hyper_grid$mtry[i],
+                          nodesize = hyper_grid$nodesize[i],
+                          ntree = hyper_grid$ntree[i])
+    
+    pred <- predict(object = model,newdata = test, type="response")
+    
+    tmp <- confusionMatrix(as.factor(pred), as.factor(test$Loan_Status))
+    acc[i] <- tmp$overall[1]
+    
+  }
+
+  opt_i_acc <- which.max(acc)
+  print(hyper_grid[opt_i_acc,])
+```
+
+Ponownie tworzê model u¿ywaj¹c powy¿szych argumentów. Poni¿ej wyniki dla zbioru testowego.
+
+```{r echo=TRUE}
+  set.seed(222)
+  
+  rforest <- randomForest(formula = Loan_Status ~ ., 
+                           data = train,
+                           mtry = 5,
+                           nodesize = 7,
+                           ntree=200)
+  
+  #train
+  
+  rf.pred.train <- predict(object = rforest,newdata = train, type = "prob")[,2]
+  rf.pred.train <- ifelse(rf.pred.train>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(rf.pred.train), as.factor(train$Loan_Status), positive = '1')
+  tmp
+  
+  acc_rf_tr <- tmp$overall[1]
+  
+  ROC <- roc(train$Loan_Status, rf.pred.train)
+  plot(ROC)
+  auc_rf_tr <- auc(ROC)
+  auc_rf_tr
+```
+
+Ponownie na zbiorze testowym model jest prawie nieomylny. Niestety ponownie mo¿e siê okazaæ, ¿e model jest przeuczony. Poni¿ej wyniki dla zbioru testowego.
+
+```{r}
+  #test
+  
+  rf.pred.test <- predict(object = rforest,newdata = test, type = "prob")[,2]
+  rf.pred.test <- ifelse(rf.pred.test>.69, 1, 0)
+  
+  tmp<-confusionMatrix(as.factor(rf.pred.test), as.factor(test$Loan_Status), positive = '1')
+  tmp
+  
+  acc_rf_test <- tmp$overall[1]
+  
+  ROC <- roc(test$Loan_Status, rf.pred.test)
+  plot(ROC)
+  auc_rf_test <- auc(ROC)
+  auc_rf_test
+```
+
+Wyniki modelu s¹ lepsze ni¿ w przypadku pierwszego modelu, jednak dalej nie s¹ zadawalaj¹ce. Niestety nie uda³o siê znacz¹co podwy¿szyæ ACC i AUC. Poni¿ej przedstawiê jeszcze jakie zmienne tym razem mia³y wp³yw na powstanie modelu.
+
+```{r}
+  varImpPlot(rforest)
+```
+
+Istotnoœæ zmiennych jest bardzo podobna jak w przypadku pierwszego modelu. Ponownie najwa¿niejsza okaza³a siê byæ zmienna historia kredytowa, a nastêpnie przychód oraz kredyt.
+
+##Wnioski
+
+Przedstawiê teraz wyniki ACC i AUC dla ka¿dej metody dla zbiorów testowych i treningowych. 
+
+```{r echo}
+results <- data.frame("acc tr" = c(acc_log_tr,acc_nb_tr,acc_boost_tr,acc_rf_tr),
+                      "auc tr" = c(auc_log_tr,auc_nb_tr,auc_boost_tr,auc_rf_tr),
+                      "acc test" = c(acc_log_test,acc_nb_test,acc_boost_test,acc_rf_test),
+                      "auc test" = c(auc_log_test,auc_nb_test,auc_boost_test,auc_rf_test),
+                      row.names = c("regresja", "Bayes", "boosting", "lasy losowe")
+  
+)
+
+results
+```
+
+Jako najlepsze metody mogê wybraæ klasyfikator naiwny Bayesa oraz boosting. Boosting ma wy¿sze wartoœci ACC, a Bayes AUC. 
+
+Zaskakuj¹ce jest to, ¿e tak prosta metoda jak klasyfikator naiwny Bayesa okaza³a siê byæ jedn¹ z lepszych. Po metodzie boosting spodziewa³abym siê lepszych wyników. Ponownie zaskakuj¹cy jest fakt, ¿e jako jeden z lepszych modeli okaza³ siê byæ ten, który bierze pod uwagê jedn¹ zmienn¹ - historiê kredytow¹. Warto wiêc siê zastanowiæ czy takie wyniki modelu s¹ wystarczaj¹ce. 
+
+Niestety mimo prób dopasowania parametrów modelu w lasach losowych model ten dalej jest przeuczony, a wyniki na zbiorze testowym nie s¹ zbytnio dobre.
+
+W celu poprawienia wyników mo¿na by próbowaæ stworzyæ model, gdzie w przypadku pozytywnej historii kredytowej zatwierdzano wniosek o kredyt, a w przypadku negatywnej stworzyæ model, który nie bierze pod uwagê tej zmiennej. Myœlê, ¿e mog³oby to poprawiæ skutecznoœæ modelu.  

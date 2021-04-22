@@ -1,0 +1,600 @@
+---
+title: "Analiza skupieñ i porz¹dkowanie liniowe"
+author: "Wiktoria Szczypka"
+date: "29 listopada 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, error = FALSE)
+```
+
+```{r echo=FALSE}
+set.seed(14)
+
+library(readxl)
+library(dplyr)
+library(psych)
+library(cluster)
+library(dendextend)
+library(purrr)
+library(ggplot2)
+library(kableExtra)
+library(genefilter)
+library(clusterSim)
+library(tidyr)
+library(TSdist)
+```
+
+##Wstêp
+
+Mój projekt bêdzie siê sk³ada³ z trzech czêœci. Najpierw dla wybranego zbioru danych, w celu jego klasyfikacji, przeprowadzê grupowanie przedzia³owe i hierarchiczne. Bêdzie mia³o to na celu stworzenie grup jak najbardziej od siebie odmiennych, lecz takich, aby elementy by³y jak najbardziej podobne. Nastêpnie stworzê uniwersalne funkcje, które wykonaj¹ rankingi obiektów za pomoc¹ metody Hellwiga i standaryzowanych sum. W trzeciej czêœci za pomoc¹ wczeœniejszych funkcji wykonam rankingi moich danych, a nastêpnie wprowadzê do niego rozs¹dne wed³ug mnie wagi.
+
+Teraz przeprowadzê grupowanie przedzia³owe i hierarchiczne zmiennych, a potem przedstawiê podobieñstwa oraz ró¿nice miêdzy oboma sposobami. Na koñcu wybiorê, moim zdaniem, najlepsze grupowanie obserwacji.
+
+
+Moje dane dotycz¹ telefonów, pochodz¹ ze strony: <http://www.benchmark.pl/ranking/smartfony>. Do swojego badania wybra³am 25 obiektów i 7 zmiennych opisuj¹cych je.
+
+Teraz przedstawiê pierwsze 6 obiektów:
+
+```{r echo=FALSE}
+#wczytuje dane
+data <- read_excel("C:/Users/Wiktoria/Documents/IiE/Rok 3/R/projekt2/telefony.xlsx")
+
+# z³¹czam pierwsze dwie kolumny w jedn¹
+data <- as.data.frame(mutate(data, Nazwa = paste(Firma, Model)) )   
+rownames(data) <- data$Nazwa
+data <- data[3:9]
+
+head(data) %>% kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Wyjaœniê teraz zmienne:
+
+* CenaMin - minimalna cena w z³, za jak¹ mo¿na kupiæ dany telefon,
+
+* 3DMark Unlimited - wynik testu wydajnoœci karty graficznej,
+
+* Bateria-filmy(min) - przez ile minut, przy na³adowanej baterii, mo¿na ogl¹daæ filmy,
+
+* Jakoœæ zdjêæ - ocena jakoœci wykonywanych zdjêæ,
+
+* GFXBench T-Rex(KL/S) - liczona w klatkach na sekundê wydajnoœæ grafiki 3D 
+
+* JetStream - wynik testu obs³ugi JavaScript - wiêkszoœæ aplikacji zawiera elementy tego jêzyka programowania
+
+* Waga(g) - waga telefonu podana w gramach
+
+
+Poni¿ej przedstawione podstawowe statystyki opisowe oraz wykresy pude³kowe:
+
+```{r echo=FALSE}
+summary(data)
+
+par(mfrow = c(2,2))
+boxplot(data[1], ylab="Cena (z³)", main="Wykres pude³kowy ceny")
+boxplot(data[2], ylab="Wynik testu 3DMark", main="Wykres pude³kowy 3DMark")
+boxplot(data[4], ylab="Jakoœæ zdjêc", main="Wykres pude³kowy jakoœci zdjêæ")
+boxplot(data[5], ylab="GFXBench (KL/S)", main="Wykres pude³kowy GFXBench")
+par(mfrow = c(2,2))
+boxplot(data[6], ylab="Wynik testu JetStream", main="Wykres pude³kowy JetStream")
+boxplot(data[7], ylab="Waga (g)", main="Wykres pude³kowy wagi")
+par(mar=c(5,4,4,5))
+boxplot(data[3], ylab="Bateria (min)", main="Wykres pude³kowy wytrzyma³oœci baterii")
+```
+
+Cena waha siê od 899 do 4978z³, mediana to oko³o 2000. Nale¿y siê zastanowiæ czy telefon z cen¹ 4978 nie jest outlierem. Statystyki testu 3D Mark równie¿ sugeruj¹, ¿e telefon o najwiêkszym wyniku jest obserwacj¹ odstaj¹c¹. Wytrzyma³oœæ baterii waha siê od 594 do 1134 minut, jednak mediana to 887 minut. Jakoœæ zdjêæ jest zmienn¹ roz³o¿on¹ doœæ równomiernie. Przy wyniku testu GFXBench mo¿na zauwa¿yæ, ¿e wiêkszoœæ telefonów osi¹ga maksymalny wynik. Analizuj¹c zmienn¹ JestStream równie¿ widaæ wartoœæ odstaj¹c¹ od innych - 270. Waga waha siê od 113 do 221 gram. 
+
+Dalsz¹ analiz¹ obserwacji odstaj¹cych zajmê siê w dalszej czêœci projektu. Moimi g³ównymi celami bêdzie pogrupowanie telefonów w taki sposób, aby ka¿da grupa mia³a sensown¹ interpretacjê oraz stworzenie rankingu telefonów w zale¿noœci od tego, które parametry s¹ istotniejsze.
+
+##Klasyfikacja
+
+W celu odpowiedniego doboru zmiennych, za pomoc¹ których bêdê klasyfikowaæ obiekty, policzê ich wspó³czynnik zmiennoœci oraz korelacje jaka zachodzi miêdzy nimi. Uznam, ¿e zmienne bêd¹ odpowiednie, je¿eli ich wspó³czynnik zmiennoœci bêdzie wiêkszy od 0.1, a wartoœæ bezwzglêdna korelacji mniejsza od 0.9.
+
+Poni¿ej korelacja miêdzy zmiennymi:
+
+```{r echo=FALSE}
+round(cor(data),2) %>% kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Najwy¿sza korelacja jest pomiêdzy zmienn¹ 3DMark Unlimited, a JetStream, jednak i tak jest ona mniejsza od 0.9, wiêc korelacja miêdzy zmiennymi jest odpowiednia.
+
+Poni¿ej wspó³czynnik zmiennoœci dla zmiennych:
+
+```{r echo=FALSE}
+round(sapply(data, function(x){
+  sd(x)/mean(x)
+}), 3) 
+```
+
+Widaæ, ¿e dla zmiennej Jakoœæ zdjêæ wspó³czynnik granicy jest minimalnie wiêkszy od akceptowalnej wartoœci. Decydujê siê jej nie usuwaæ, uwa¿am, i¿ bêdzie ona ciekaw¹ zmienn¹ do dalszej analizy.
+
+Ze wzglêdu na to, ¿e jednostki zmiennych s¹ nieporównywalne, standaryzuje je. Dziêki temu bêdzie mo¿na je porównywaæ oraz wykryæ obserwacje odstaj¹ce. 
+
+Poni¿ej przedstawiam statystyki i wykresy pude³kowe danych po standaryzacji, aby porównaæ zmienne miêdzy sob¹:
+
+```{r echo=FALSE}
+dataScale <- scale(data)
+
+labels <- colnames(dataScale)
+par(mar=c(7, 4.1, 4.1, 2.1))
+boxplot(dataScale, main="Wykres pude³kowy dla zmiennych po standaryzacji", names=rep('',7))
+text(x =  seq_along(labels), y = par("usr")[3]-2, srt = 45,
+     labels = labels, xpd = TRUE)
+
+summary(dataScale)
+```
+
+Najwiêksz¹ rozpiêtoœæ ma zmienna waga. Widaæ, ¿e 4 zmienne maj¹ obserwacje odstaj¹ce.
+Decydujê siê na usuniêcie obiektu, którego wartoœæ w zmiennej JetStream jest bardzo odleg³a od innych. Pozosta³e obserwacje zostawiam.
+
+Poni¿ej ponownie statystyki oraz wykresy pude³kowe zmiennych po usuniêciu obserwacji:
+
+```{r echo=FALSE}
+dataScale <- dataScale[-1,]
+
+par(mar=c(7, 4.1, 4.1, 2.1))
+boxplot(dataScale, main="Wykres pude³kowy dla zmiennych po standaryzacji", names=rep('',7))
+text(x =  seq_along(labels), y = par("usr")[3]-2, srt = 45,
+     labels = labels, xpd = TRUE)
+
+summary(dataScale)
+```
+
+Mo¿na zauwa¿yæ, ¿e teraz nie ma ju¿ tak wiele wartoœci odstaj¹cych jak wczeœniej. Obserwacja ta ewidentnie by³a outlierem - telefon mia³ bardzo dobre parametry, lecz by³ te¿ o wiele dro¿szy od innych.
+
+Teraz przeprowadzê grupowanie przedzia³owe i hierarchiczne zmiennych, a potem przedstawiê podobieñstwa oraz ró¿nice miêdzy oboma sposobami. Na koñcu wybiorê, moim zdaniem, najlepsze grupowanie obserwacji.
+
+###Grupowanie przedzia³owe
+
+Do mojego badania u¿yjê dwie funkcjê - `kmeans` oraz `pam`. Pierwsza z nich jest odzwierciedleniem metody k-œrednich, a druga odmian¹ metody k-medoid.
+
+Podstawowym problemem w grupowaniu przedzia³owym jest to, ¿e liczbê skupieñ (grup) trzeba znaæ z góry. 
+
+W celu zbadania jaka iloœæ grup bêdzie najlepsza stworzê przy pomocy funkcji `kmeans` wykres tzw. ³okciowy. Wykres przypomina swoim wygl¹dem ³okieæ, a punkt za³amania - czyli, ¿e wartoœci krzywej przestan¹ szybko maleæ bêdzie najlepsz¹ liczb¹ klas (wed³ug tej metody).
+
+```{r echo=FALSE}
+total <- map_dbl(1:10,  function(k){
+  model <- kmeans(x = dataScale, centers = k, nstart = 10)
+  model$tot.withinss
+})
+
+elbow <- data.frame(
+  k = c(1:10) ,
+  totWithinss = total
+)
+
+ggplot(elbow, aes(x = k, y = totWithinss)) +
+  geom_line(lwd=1) +
+  scale_x_continuous(breaks = 1:10)+
+  ggtitle("Wykres ³okciowy") 
+```
+
+Widaæ, ¿e w tym przypadku ciê¿ko stwierdziæ, gdzie jest za³amanie. Podejrzewa³abym, ¿e jest to k = 3 lub k = 4.
+
+Wykonam jeszcze jeden wykres, który ma s³u¿yæ do pomocy w wyborze jaka liczba klas bêdzie najlepsza. Tym razem za pomoc¹ funkcji `pam`. Wed³ug tej metody najlepsza liczba klas to ta, gdzie krzywa ma najwiêksz¹ wartoœæ. 
+
+```{r echo=FALSE}
+silWidth <- map_dbl(2:10,  function(k){
+  model <- pam(x = dataScale, k = k)
+  model$silinfo$avg.width
+})
+
+
+sil<- data.frame(
+  k = c(2:10),
+  silWidth = silWidth
+)
+
+ggplot(sil, aes(x = k, y = silWidth)) +
+  geom_line(lwd=1) +
+  scale_x_continuous(breaks = 2:10)
+```
+
+Przy pomocy tej metody ewidentnie widaæ, ¿e najlepsza iloœæ klas to 4.
+
+Ze wzglêdu na to, ¿e wyniki nie s¹ do koñca jasne policzê indeksy Caliñskiego i Harabasza (G1), Bakera i Huberta (G2), Huberta i Levine'a (G3) oraz Silhouette. Dla G1, G2 i Silhouette najlepsza bêdzie maksymalna wartoœæ, a dla G3 minimalna.
+
+```{r echo=FALSE}
+distance <- dist(dataScale)
+
+index <- sapply(2:10, function(k){
+  cl <- kmeans(x = dataScale, centers = k, nstart = 10)$cluster
+  c(index.G1(dataScale, cl),
+    index.G2(distance,cl),
+    index.G3(distance,cl),
+    index.S(distance,cl)
+  )
+})
+
+index <- as.data.frame(t(index))
+colnames(index) <- c("G1", "G2", "G3", "Silhouette")
+index$k <- 2:10
+index <- index %>% gather(key = "index", value="value", -k)
+
+index$index <- as.factor(index$index)
+ggplot(index, aes(x = k, y = value, colour=index)) +
+  geom_line(lwd=1) +
+  scale_x_continuous(breaks = 2:10) +
+  ggtitle("Wartoœci indeksów dla metody k-œrednich")
+
+```
+
+Dla tej metody tylko z indeksu G1 mo¿na zauwa¿yæ, ¿e najlepsza liczba klas to 3. Chocia¿ przy liczbie klas 10 wartoœæ indeksu te¿ jest wysoka. Z pozosta³ych ciê¿ko cokolwiek wywnioskowaæ.
+
+```{r echo=FALSE}
+distance <- dist(dataScale)
+
+index <- sapply(2:10, function(k){
+  cl <- pam(x = dataScale, k = k)$clustering
+  c(index.G1(dataScale, cl),
+    index.G2(distance,cl),
+    index.G3(distance,cl),
+    index.S(distance,cl)
+  )
+})
+
+index <- as.data.frame(t(index))
+colnames(index) <- c("G1", "G2", "G3", "Silhouette")
+index$k <- 2:10
+index <- index %>% gather(key = "index", value="value", -k)
+
+index$index <- as.factor(index$index)
+ggplot(index, aes(x = k, y = value, colour=index)) +
+  geom_line(lwd=1) +
+  scale_x_continuous(breaks = 2:10) +
+  ggtitle("Wartoœci indeksów dla metody pam")
+
+```
+
+W tym przypadku podobnie jak wczeœniej tylko z indeksu G1 mo¿na zauwa¿yæ, ¿e prawdopodobnie najlepsza liczba klas to 3. 
+
+Ze wzglêdu na otrzymane wyniki wykonuje analizê dla liczby skupieñ równej 3. Poni¿ej przedstawiê przydzia³ telefonów do grup za pomoc¹ obu metod.
+
+
+```{r echo=FALSE}
+dataKlasy <- data[-1,]
+
+k3 <- kmeans(dataScale, 3, nstart = 10)
+dataKlasy$k3 <- k3$cluster
+
+pam3 <- pam(dataScale, 3)
+dataKlasy$pam3 <- pam3$clustering
+
+dataKlasy[,8:9]
+```
+
+Widaæ, ¿e 3 ostatnie pozycje s¹ takie same i w obu przypadkach stanowi¹ jedn¹ grupê. W pozosta³ych dwóch grupach mo¿na zauwa¿yæ ma³e ró¿nice. 
+
+
+###Grupowanie hierarchiczne
+
+Do grupowania hierarchicznego u¿yjê funkcji `hclust`. Argumentem tej funkcji jest macierz odleg³oœci miêdzy danymi. Do obliczenia odleg³oœci wykorzystuje jedn¹ z popularniejszych metod - euklidesow¹. Funkcja ta ma te¿ mo¿liwoœæ wyboru metody za pomoc¹ której dokona grupowania hierarchicznego. Wykonam grupowanie dla czterech z nich i postaram siê wybraæ najlepsz¹ opcjê.
+
+```{r echo=FALSE}
+distance <- dist(dataScale)
+
+hclustWard <- hclust(distance, method = "ward.D")
+hclustAvg <- hclust(distance, method = "average")
+hclustComplete <- hclust(distance, method = "complete")
+hclustSing <- hclust(distance, method = "single")
+
+#par(mfrow = c(2,2))
+plot(hclustWard, hang=-1, main="Metoda Warda")
+plot(hclustAvg, hang=-1, main="Metoda œrednich")
+plot(hclustComplete, hang=-1, main="Metoda najdalszego s¹siada")
+plot(hclustSing, hang=-1, main="Metoda najbli¿szego s¹siada")
+```
+
+Z powy¿szych dendrogramów mo¿na zauwa¿yæ, ¿e wykonanie go za pomoc¹ metody Warda jest najbardziej czytelne. W praktyce to w³aœnie ona jest najczêœciej wykorzystywana. Pozosta³e maj¹ ró¿ne wady. Do dalszej analizy wykorzystam w³aœnie tê metodê. Poni¿ej ponownie przedstawiam dendrogram wykonany metod¹ Warda.
+
+```{r echo=FALSE}
+plot(hclustWard, hang=-1, main="Metoda Warda")
+```
+
+Aby zdecydowaæ jaka liczba klas bêdzie najlepsza policzê 4 indeksy - Caliñskiego i Harabasza (G1), Bakera i Huberta (G2), Huberta i Levine'a (G3) oraz Silhouette. Dla G1, G2 i Silhouette najlepsza bêdzie maksymalna wartoœæ, a dla G3 minimalna.
+
+```{r echo=FALSE}
+index <- sapply(2:10, function(k){
+  cl <- cutree(hclustWard, k)
+  c(index.G1(dataScale, cl),
+    index.G2(distance,cl),
+    index.G3(distance,cl),
+    index.S(distance,cl)
+  )
+})
+
+index <- as.data.frame(t(index))
+colnames(index) <- c("G1", "G2", "G3", "Silhouette")
+index$k <- 2:10
+index <- index %>% gather(key = "index", value="value", -k)
+
+index$index <- as.factor(index$index)
+ggplot(index, aes(x = k, y = value, colour=index)) +
+  geom_line(lwd=1) +
+  scale_x_continuous(breaks = 2:10) +
+  ggtitle("Wartoœci indeksów")
+```
+
+Wynik nie jest doœæ jasny. G1, G2 oraz Silhouette sugeruj¹, ¿e liczba klas powinna wynosiæ 2, lecz w przypadku G2 wynik zaczyna wraz ze wzrostem klas rosn¹æ, G3 jest prawie prost¹ lini¹. Ze wzglêdu na wyniki indeksów oraz w³asn¹ ocenê dendrogramu przedstawiam dwie propozycje podzia³u:
+
+```{r echo=FALSE}
+dendWard1 <- color_branches(as.dendrogram(hclustWard), h=10)   
+plot(dendWard1,  main="Podzia³ na 2 klasy")
+
+dendWard2 <- color_branches(as.dendrogram(hclustWard), h=8)   
+plot(dendWard2, main="Podzia³ na 3 klasy")
+```
+
+Jak widaæ podzia³ na 2 czêœci jest bardzo nierównomierny.
+
+Poni¿ej przedstawiê przydzia³ telefonów do grup za pomoc¹ obu podzia³ów.
+
+```{r echo=FALSE}
+cl3 <- cutree(hclustWard, 3)
+dataKlasy$cl3 <- cl3
+
+cl2 <- cutree(hclustWard, 2)
+dataKlasy$cl2 <- cl2
+
+dataKlasy[,10:11]
+
+```
+
+Ponownie widaæ, ¿e jedna grupa w obu przypadkach jest taka sama. Wed³ug mnie podzia³ na dwie grupy jest zbyt ogólny.
+
+
+###Podsumowanie
+
+Poni¿ej tabela z przydzia³em do klas za pomoc¹ odpowiednio - k-means (k = 3), pam (k = 3) oraz grupowanie hierarchiczne (k = 3 i k = 2)
+
+```{r echo=FALSE}
+dataKlasy[8:11]
+
+```
+
+W przypadku metody grupowania przedzia³owego wynik dotycz¹cy iloœci skupieñ by³ doœæ jednoznaczny. W przypadku metody grupowania hierarchicznego mo¿na by³o siê bardziej oprzeæ na opinii subiektywnej i w mojej analizie bra³am pod uwagê dwie opcje - iloœæ klas równ¹ 2 oraz 3. 
+
+Mo¿na zauwa¿yæ, ¿e jedna grupa bez wzglêdu na metodê klasteryzacji jest taka sama - s¹ to telefony najs³absze. W przypadku podziale na 3 grupy ró¿nice s¹ niewielkie. 
+
+Jako finalnie najlepszy wynik wybieram liczbê skupieñ 3 za pomoc¹ metody grupowania przedzia³owego k-œrednich. 
+
+Poni¿ej przedstawiam statystyki dla tej grupy:
+
+œrednia:
+```{r echo=FALSE}
+dataKlasy[1:8] %>% 
+    group_by(k3) %>% 
+    summarise_all(funs(round(mean(.),2))) %>% kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Odchylenie standardowe:
+```{r echo=FALSE}
+dataKlasy[1:8] %>% 
+    group_by(k3) %>% 
+    summarise_all(funs(round(sd(.),2))) %>% kable() %>% kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+Telefony dziel¹ siê na 3 grupy:
+
+* Najdro¿sze, najlepsze graficznie, najlepsze do robienia zdjêæ, najd³u¿ej trzymaj¹ce baterie, lecz najciê¿sze oraz nie tak dobre w obs³udze JavaScript. S¹dzê, ¿e s¹ to telefony dla ludzi, którym zale¿y na dobrej grafice, graniu w gry oraz na bardzo dobrej jakoœci robienia zdjêæ. 
+
+* Najtañsze, z o wiele gorszymi wynikami testów, przeciêtnej wagi, za to równie¿ dobrze trzymaj¹ce baterie. Myœlê, ¿e s¹ to telefony dla osób, którym nie zale¿y na wysokich parametrach telefonu, lecz na niskiej cenie i tym, by bateria wytrzymywa³a doœæ d³ugo. Mo¿na siê domyœlaæ, ¿e s¹ to te trzy telefony, które odstawa³y na wykresie pude³kowym zmiennej GFXBench.
+
+* Œredniej ceny o dobrych graficznie i dobrej jakoœci zdjêæ, lecz gorszej ni¿ w przypadku pierwszej grupy. Za to s¹ lepsze w obs³udze JavaScripu oraz s¹ najl¿ejsze. Minusem jest s³absza bateria. Telefony te s¹ wiêc skierowane do 'przeciêtnego' u¿ytkownika, któremu nie zale¿y na bardzo dobrej grafice, wa¿niejsza jest obs³uga aplikacji i lekkoœæ telefonu. 
+
+##Funkcje 
+
+Przedstawiê teraz funkcje, które za pomoc¹ metody Hellwiga oraz standaryzowanych sum (metoda porz¹dkowania liniowego) tworz¹ ranking obiektów.
+
+Jako parametry wejœciowe przyjmuj¹ one `df` - ramkê danych, gdzie pierwsza kolumna to nazwy obiektów, a pozosta³e to numeryczne zmienne oraz `wzorzec` - wektor, który odpowiada kolejnym zmiennym (bez nazwy) i przedstawia czy zmienna jest stymulant¹ ("+"), destymulanta ("-") lub nominant¹ (konkretna wartoœæ).
+
+Pierwsza funkcja za pomoc¹ algorytmu metody Hellwiga tworzy ranking - od najlepszego do najgorszego obiektu.
+
+```{r}
+sortHellwig <- function(df, wzorzec) {
+  row <- nrow(df)
+  col <- ncol(df)
+  len <- length(wzorzec)
+  
+  for(i in 1:len) {
+    if(wzorzec[i]!="+" && wzorzec[i]!="-") {
+      wzorzec[i] = (as.numeric(wzorzec[i])-mean(df[,i+1]))/sd(df[,i+1])
+    }
+  }
+
+  df[,2:col] <- scale(df[,2:col])
+  
+  for(i in 1:len) {
+    if(wzorzec[i] == "+") {
+      wzorzec[i] = max(df[,i+1])
+    } else if(wzorzec[i]=="-") {
+      wzorzec[i] = min(df[,i+1])
+    } else{
+    }
+  }
+  
+  
+  wzorzec <- as.numeric(c(NA, wzorzec))
+  df <- rbind(df,wzorzec)
+
+  for(i in 1:row) {
+    df[i,col+1] <- dist(df[i,2:col], df[row+1,2:col])
+  }
+  
+  
+  df[,col+1] <- as.vector(df[,col+1] )
+  
+  
+  d <- mean(df[1:row,col+1]) + 2*sd(df[1:row,col+1])
+  
+  for(i in 1:row) {
+    df[i,col+2] <- 1-df[i,col+1]/d
+  }
+  
+  df[,col+2] <- as.vector(df[,col+2] )
+  
+  names(df)[col+1] <- "odleglosc"
+  names(df)[col+2] <- "wynik"
+  
+  arrange(df[1:row,], desc(wynik))
+  
+}
+
+```
+
+Druga funkcja tworzy ranking za pomoc¹ algorytmu metody standaryzowanych sum, równie¿ od najlepszego obiektu do najgorszego.
+
+```{r}
+sortSum <- function(df, wzorzec) {
+  row <- nrow(df)
+  col <- ncol(df)
+  len <- length(wzorzec)
+  
+  for(i in 1:len) {
+    if(wzorzec[i]!="+" && wzorzec[i]!="-") {
+      for(j in 1:row) {
+        df[j,i+1] <- - abs(df[j, i+1] - as.numeric(wzorzec[i]))
+      }
+    }
+  }
+  
+  for(i in 1:len) {
+    if(wzorzec[i] == "-") {
+      df[,i+1] = - df[,i+1]
+    }
+  }
+  
+  df[,2:col] <- scale(df[,2:col])
+  
+  for(i in 1:row) {
+    df[i,col+1] <- sum(df[i,2:col])
+  }
+  
+  df[,col+1] <- as.vector(df[,col+1] )
+  
+  for(i in 1:row) {
+    df[i,col+2] <- (df[i,col+1] - min(df[,col+1])) / max(df[,col+1] - min(df[,col+1]))
+  }
+  
+  df[,col+2] <- as.vector(df[,col+2] )
+  
+  names(df)[col+1] <- "suma"
+  names(df)[col+2] <- "wynik"
+  
+  arrange(df[1:row,], desc(wynik))
+  
+}
+```
+
+
+
+##Porz¹dkowanie liniowe
+
+W tej czêœci projektów stworzê rankingi telefonów. Aby je stworzyæ muszê wybraæ na jakiej podstawie maj¹ byæ tworzone tzn. jaki charakter bêd¹ mia³y poszczególne zmienne. 
+
+* CenaMin - przy kupowaniu telefonów dla klienta wa¿na jest cena - najlepiej aby by³a jak najmniejsza, zmienna ta bêdzie destymulant¹ (preferowane s¹ mo¿liwie niskie wartoœci)
+
+* Parametry 3DMark, Bateria, Jakoœæ zdjêæ, GFXBench, JetStream œwiadcz¹ o tym jak dobry jest telefon. Po¿¹dane s¹ wiêc jak najwy¿sze wartoœci - zmienne bêd¹ stymulantami
+
+* Waga - wydaje mi siê, ¿e najlepiej jest jak telefon nie jest ani za ciê¿ki, ani za lekki. Zmienna ta wiêc bêdzie nominant¹, ustalam optymalna wartoœæ jako 170 gram.
+
+Najpierw wykonam 2 rankingi bez u¿ycia wag. Pierwszy z nich wykonam metod¹ Hellwiga za pomoc¹ przedstawionej wczeœniej funkcji.
+
+```{r echo=FALSE}
+df <- read_excel("C:/Users/Wiktoria/Documents/IiE/Rok 3/R/projekt2/telefony.xlsx")
+df <- as.data.frame(mutate(df, Nazwa = paste(Firma, Model)) )   
+df <- as.data.frame(c(df[10], df[3:9]))
+
+df1 <- df
+df2 <- df
+
+wzorzec <- c("-", "+", "+", "+", "+", "+", 170)
+ranking <- sortHellwig(df2, wzorzec)
+ranking[,c(1,10)]
+```
+
+Drugi ranking wykonujê za pomoc¹ metody standaryzowanych sum:
+
+```{r echo=FALSE}
+
+ranking2 <- sortSum(df1, wzorzec)
+ranking2[,c(1,10)]
+
+```
+
+Poni¿ej porównanie wyników obu metod:
+
+```{r echo=FALSE}
+rankingi <-as.data.frame(c(ranking[c(1,10)], ranking2[c(1,10)])) 
+rankingi
+```
+
+Mo¿na zauwa¿yæ, ¿e 3 pierwsze pozycje pozostaj¹ bez zmian w obu rankingach. 3 najgorsze telefony w obu rankingach s¹ takie same, lecz ró¿ni¹ siê miejscami. Miejsca 13 i 14 w obu rankingach s¹ takie same. Pozosta³e pozycje s¹ wymieszane w swoich grupach. Fakt, ¿e mimo tego, ¿e chcemy minimalizowaæ cenê, na pierwszym miejscu jest najdro¿szy wynika z tego, ¿e jego pozosta³e parametry s¹ bardzo dobre. Wprowadzê teraz wybrane przez siebie wagi, gdzie cena telefonu bêdzie najwa¿niejszym kryterium. Poni¿ej przedstawiam wybrane przeze mnie wagi dla ka¿dej ze zmiennej:
+
+```{r }
+wagi <- c(.4, .05, .1, .15, .05, .15, .1)
+```
+
+Zmienna Cena jest wed³ug mnie najwa¿niejsza, dlatego ustalam j¹ jako tak¹ wysok¹. Wa¿na jest tez jakoœæ zdjêæ i obs³uga JavaScript (niezbêdna do korzystania z wielu aplikacji). Najmniej istotne s¹ dla mnie zmienne 3DMark oraz GFXBench - nie zale¿y mi, ¿eby telefon mia³ a¿ tak rozwiniêt¹ grafikê. Zmiennymi poœrednimi jest bateria i waga - s¹ one wa¿ne, ale nie najwa¿niejsze.
+
+```{r echo=FALSE}
+df3 <- df
+
+sortSum <- function(df, wzorzec, wagi) {
+  row <- nrow(df)
+  col <- ncol(df)
+  len <- length(wzorzec)
+  
+  for(i in 1:len) {
+    if(wzorzec[i]!="+" && wzorzec[i]!="-") {
+      for(j in 1:row) {
+        df[j,i+1] <- - abs(df[j, i+1] - as.numeric(wzorzec[i]))
+      }
+    }
+  }
+  
+  for(i in 1:len) {
+    if(wzorzec[i] == "-") {
+      df[,i+1] = - df[,i+1]
+    }
+  }
+  
+  df[,2:col] <- scale(df[,2:col])
+  
+  tmp <- rep(0,len)
+  
+  for(i in 1:row) {
+    for(j in 1:len){
+      tmp[j] <- df[i,j+1] * wagi[j]
+    }
+    df[i,col+1] <- sum(tmp)
+  }
+  
+  df[,col+1] <- as.vector(df[,col+1] )
+  
+  for(i in 1:row) {
+    df[i,col+2] <- (df[i,col+1] - min(df[,col+1])) / max(df[,col+1] - min(df[,col+1]))
+  }
+  
+  df[,col+2] <- as.vector(df[,col+2] )
+  
+  names(df)[col+1] <- "suma"
+  names(df)[col+2] <- "wynik"
+  
+  arrange(df[1:row,], desc(wynik))
+  
+}
+
+ranking3<- sortSum(df3, wzorzec, wagi)
+ranking3[,c(1,10)]
+
+```
+
+Widaæ, ¿e ranking wygl¹da teraz zupe³nie inaczej. Wyœwietlê teraz telefony, cenê oraz ich przydzia³ do klas z pierwszej czêœci projektu:
+
+```{r echo=FALSE}
+dataKlasy[, c(1,8)]
+```
+
+Mo¿na zauwa¿yæ, ¿e w rankingu gdzie s¹ uwzglêdnione wagi czo³ówkê stanowi¹ telefony z klasy 3 - tzn. œrednia cena, ale równie¿ dobre (graficznie gorsze od klasy 1). Bior¹c pod uwagê w jaki sposób przydzieli³am wagi nie jest to zaskakuj¹cy wynik. Ostatnie miejsce w rankingu ma najdro¿szy telefon.
